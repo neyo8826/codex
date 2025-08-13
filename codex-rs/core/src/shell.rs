@@ -9,6 +9,10 @@ pub struct ZshShell {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Shell {
     Zsh(ZshShell),
+    #[cfg(target_os = "windows")]
+    PowerShell(PowerShellShell),
+    #[cfg(target_os = "windows")]
+    Cmd(CmdShell),
     Unknown,
 }
 
@@ -31,6 +35,37 @@ impl Shell {
                 } else {
                     return None;
                 }
+                Some(result)
+            }
+            #[cfg(target_os = "windows")]
+            Shell::PowerShell(ps) => {
+                let mut result = vec![ps.shell_path.clone()];
+                // Do not use -NoProfile because we want to honor the user's profile.
+                result.push("-NoLogo".to_string());
+                result.push("-Command".to_string());
+
+                // If the model wrapped with bash -lc, unwrap to the inner script.
+                let joined = strip_bash_lc(&command)
+                    .or_else(|| shlex::try_join(command.iter().map(|s| s.as_str())).ok());
+                let joined = joined?;
+
+                // Source the user's PowerShell profile if it exists, then run the command in a subshell.
+                // Using a scriptblock in parentheses keeps semantics closer to zsh's (myecho) grouping.
+                let script = format!("if (Test-Path $PROFILE) {{ . $PROFILE }}; ({joined})");
+                result.push(script);
+                Some(result)
+            }
+            #[cfg(target_os = "windows")]
+            Shell::Cmd(cmd) => {
+                let mut result = vec![cmd.shell_path.clone()];
+                // /d: disable AutoRun from registry, /s: strip quotes, /c: execute and terminate
+                result.extend(["/d".to_string(), "/s".to_string(), "/c".to_string()]);
+
+                let joined = strip_bash_lc(&command)
+                    .or_else(|| shlex::try_join(command.iter().map(|s| s.as_str())).ok());
+                let joined = joined?;
+                // For simplicity, pass the joined command as is; CMD will parse it.
+                result.push(joined);
                 Some(result)
             }
             Shell::Unknown => None,
@@ -88,7 +123,85 @@ pub async fn default_user_shell() -> Shell {
 
 #[cfg(not(target_os = "macos"))]
 pub async fn default_user_shell() -> Shell {
-    Shell::Unknown
+    #[cfg(target_os = "windows")]
+    {
+        use std::env;
+        use std::fs;
+        use std::path::{Path, PathBuf};
+
+        fn find_in_path(exe: &str) -> Option<String> {
+            let path_os = env::var_os("PATH")?;
+            for dir in env::split_paths(&path_os) {
+                let candidate = dir.join(exe);
+                if candidate.is_file() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+            None
+        }
+
+        fn find_pwsh() -> Option<String> {
+            if let Some(p) = find_in_path("pwsh.exe") {
+                return Some(p);
+            }
+            let program_files = env::var_os("ProgramFiles")?;
+            let root = PathBuf::from(program_files).join("PowerShell");
+            if let Ok(entries) = fs::read_dir(root) {
+                // Prefer highest (latest) version directory
+                let mut versions: Vec<PathBuf> =
+                    entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+                versions.sort(); // lexicographic; good enough for version dir names
+                versions.reverse();
+                for v in versions {
+                    let candidate = v.join("pwsh.exe");
+                    if candidate.is_file() {
+                        return Some(candidate.to_string_lossy().into_owned());
+                    }
+                }
+            }
+            None
+        }
+
+        fn find_windows_powershell() -> Option<String> {
+            if let Some(p) = find_in_path("powershell.exe") {
+                return Some(p);
+            }
+            let system_root = env::var_os("SystemRoot")?;
+            let candidate = PathBuf::from(system_root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe");
+            if candidate.is_file() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+            None
+        }
+
+        if let Some(pwsh_path) = find_pwsh() {
+            return Shell::PowerShell(PowerShellShell {
+                shell_path: pwsh_path,
+            });
+        }
+        if let Some(ps_legacy) = find_windows_powershell() {
+            return Shell::PowerShell(PowerShellShell {
+                shell_path: ps_legacy,
+            });
+        }
+        if let Some(comspec) = env::var_os("COMSPEC") {
+            let comspec_str = comspec.to_string_lossy().into_owned();
+            if Path::new(&comspec_str).is_file() {
+                return Shell::Cmd(CmdShell {
+                    shell_path: comspec_str,
+                });
+            }
+        }
+        Shell::Unknown
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Shell::Unknown
+    }
 }
 
 #[cfg(test)]
@@ -229,5 +342,65 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[cfg(target_os = "windows")]
+pub struct PowerShellShell {
+    shell_path: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[cfg(target_os = "windows")]
+pub struct CmdShell {
+    shell_path: String,
+}
+
+#[cfg(test)]
+#[cfg(target_os = "windows")]
+mod windows_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn test_pwsh_wraps_with_profile_and_joins() {
+        let shell = Shell::PowerShell(PowerShellShell {
+            shell_path: "pwsh".to_string(),
+        });
+        let input = vec!["echo".to_string(), "hello".to_string()];
+        let out = shell.format_default_shell_invocation(input).unwrap();
+        assert_eq!(out[0], "pwsh");
+        assert_eq!(out[1], "-NoLogo");
+        assert_eq!(out[2], "-Command");
+        assert!(out[3].starts_with("if (Test-Path $PROFILE) { . $PROFILE }"));
+        assert!(out[3].contains("(echo hello)"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn test_powershell_wraps_with_profile_and_joins_bash() {
+        let shell = Shell::PowerShell(PowerShellShell {
+            shell_path: "powershell".to_string(),
+        });
+        let input = vec!["echo".to_string(), "hello".to_string()];
+        let out = shell.format_default_shell_invocation(input).unwrap();
+        assert_eq!(out[0], "powershell");
+        assert_eq!(out[1], "-NoLogo");
+        assert_eq!(out[2], "-Command");
+        assert!(out[3].starts_with("if (Test-Path $PROFILE) { . $PROFILE }"));
+        assert!(out[3].contains("(echo hello)"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::unwrap_used)]
+    async fn test_cmd_wraps_c_simple() {
+        let shell = Shell::Cmd(CmdShell {
+            shell_path: "cmd.exe".to_string(),
+        });
+        let input = vec!["dir".to_string(), ".".to_string()];
+        let out = shell.format_default_shell_invocation(input).unwrap();
+        assert_eq!(out[..4], ["cmd.exe", "/d", "/s", "/c"]);
+        assert!(out[4].contains("dir ."));
     }
 }

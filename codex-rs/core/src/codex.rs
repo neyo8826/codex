@@ -1957,6 +1957,25 @@ pub struct ExecInvokeArgs<'a> {
     pub stdout_stream: Option<StdoutStream>,
 }
 
+// On Windows, UI events should not show a synthetic "bash -lc" wrapper.
+// If present as ["bash", "-lc", SCRIPT], unwrap and tokenize SCRIPT for display.
+#[cfg(target_os = "windows")]
+fn sanitize_display_command_for_windows(command: &[String]) -> Vec<String> {
+    match command {
+        [first, second, third] if first == "bash" && second == "-lc" => match shlex::split(third) {
+            Some(tokens) => tokens,
+            None => vec![third.clone()],
+        },
+        _ => command.to_vec(),
+    }
+}
+
+// On non-Windows platforms, keep the display command as-is.
+#[cfg(not(target_os = "windows"))]
+fn sanitize_display_command_for_windows(command: &[String]) -> Vec<String> {
+    command.to_vec()
+}
+
 fn maybe_run_with_user_profile(
     params: ExecParams,
     sess: &Session,
@@ -2068,7 +2087,7 @@ async fn handle_container_exec_with_params(
                     params.with_escalated_permissions.unwrap_or(false),
                 )
             };
-            let command_for_display = params.command.clone();
+            let command_for_display = sanitize_display_command_for_windows(&params.command);
             (params, safety, command_for_display)
         }
     };

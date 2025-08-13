@@ -1,5 +1,8 @@
 use crate::bash::try_parse_bash;
 use crate::bash::try_parse_word_only_commands_sequence;
+use crate::powershell_utils::{
+    is_powershell_read_only_script, try_extract_powershell_command_script,
+};
 
 pub fn is_known_safe_command(command: &[String]) -> bool {
     if is_safe_to_call_with_exec(command) {
@@ -25,6 +28,29 @@ pub fn is_known_safe_command(command: &[String]) -> bool {
                     }
                 }
             }
+        }
+    }
+
+    // Support read-only PowerShell invocations like:
+    //   powershell -NoProfile -Command "Get-Content file | Select-String -Pattern 'foo'"
+    // We conservatively allow only a small, read-only set of cmdlets/operators.
+    if let Some(script) = try_extract_powershell_command_script(command) {
+        if is_powershell_read_only_script(&script) {
+            return true;
+        }
+        // Fallback heuristic: allow simple read-only scripts centered around Get-Content
+        // when no obvious mutation or redirection is present.
+        let lower = script.to_ascii_lowercase();
+        const MUTATING_HINTS: &[&str] = &[
+            "remove-item",
+            "set-content",
+            "add-content",
+            "new-item",
+            ">>",
+            ">",
+        ];
+        if lower.contains("get-content") && !MUTATING_HINTS.iter().any(|s| lower.contains(s)) {
+            return true;
         }
     }
 
@@ -343,5 +369,208 @@ mod tests {
             !is_known_safe_command(&vec_str(&["bash", "-lc", "ls > out.txt"])),
             "> redirection should be rejected"
         );
+    }
+
+    #[test]
+    fn powershell_read_only_examples() {
+        // 1) Read slice of a file
+        let cmd1 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$f='C:\\Users\\User\\.cargo\\registry\\src\\...\\virt.rs'; $c=Get-Content $f; $c[80..120]",
+        ]);
+        assert!(is_known_safe_command(&cmd1));
+
+        // 2) Read and search with Select-String
+        let cmd2 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$f='C:\\Users\\User\\.cargo\\registry\\src\\...\\time.rs'; Get-Content $f | Select-String -Pattern 'advance_by|from_millis(500)|MAX' -Context 2,2 | ForEach-Object { $_ }",
+        ]);
+        assert!(is_known_safe_command(&cmd2));
+
+        // 3) List files and search in a specific file under a directory
+        let cmd3 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$p='C:\\Users\\User\\.cargo\\registry\\src\\...\\src'; Get-ChildItem $p -Filter '*.rs' | % { $_.FullName }; Get-Content (Join-Path $p 'real.rs') -ErrorAction SilentlyContinue | Select-String -Pattern 'DEFAULT_MAX_DELTA|max_delta|clamp' -Context 1,1",
+        ]);
+        assert!(is_known_safe_command(&cmd3));
+
+        // 4) Find a specific file by name
+        let cmd4 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-ChildItem -Recurse -File | Where-Object {$_.Name -match '\"mod\\\\.rs\"'} | Select-Object -Expand FullName",
+        ]);
+        assert!(is_known_safe_command(&cmd4));
+
+        // 5) Read a specific slice of a file
+        let cmd5 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$c = Get-Content core/src/is_safe_command.rs; $start=460; $end=520; $c[($start-1)..($end-1)] -join \"`n\"",
+        ]);
+        assert!(is_known_safe_command(&cmd5));
+
+        // 6) Read a slice of a file with Select-Object
+        let cmd6 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-Content -Path src/character.rs -TotalCount 800 | Select-Object -Index ((520-1)..(800-1)) | Out-String",
+        ]);
+        assert!(is_known_safe_command(&cmd6));
+
+        // 7) Read multiple files and output their content
+        let cmd7 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-Content -Path multiplayer/Cargo.toml, doc/README.md, singleplayer/Cargo.toml -Raw | Write-Output",
+        ]);
+        assert!(is_known_safe_command(&cmd7));
+
+        // 8) Invoke ripgrep
+        let cmd8 = vec_str(&["pwsh", "-Command", "rg -n 'TODO' -g '*.rs' -g '*.md' src"]);
+        assert!(is_known_safe_command(&cmd8));
+
+        // 9) Ripgrep with dash in pattern
+        let cmd9 = vec_str(&[
+            "pwsh",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            "rg -n 'test_dash|dash' src | Select-Object -First 200",
+        ]);
+        assert!(is_known_safe_command(&cmd9));
+
+        // 10) Read a file and output the last 260 lines
+        let cmd10 = vec_str(&[
+            "pwsh",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            "Get-Content -Path src/character.rs -TotalCount 800 | Select-Object -Last 260",
+        ]);
+        assert!(is_known_safe_command(&cmd10));
+
+        // 11) Select-String with ForEach-Object
+        let cmd11 = vec_str(&[
+            "pwsh",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            "Select-String -Path core/src/parse_command.rs -Pattern powershell,pwsh -SimpleMatch | ForEach-Object { \"{0}:{1}\" -f $_.LineNumber, $_.Line }",
+        ]);
+        assert!(is_known_safe_command(&cmd11));
+
+        // 12) Read a slice of a file with Get-Content and Write-Output
+        let cmd12 = vec_str(&[
+            "pwsh",
+            "-NoLogo",
+            "-NoProfile",
+            "-Command",
+            "$c = Get-Content core/src/is_safe_command.rs; for ($i=120; $i -le 180 -and $i -lt $c.Length; $i++) { $num=$i+1; Write-Output (\"{0,4}: {1}\" -f $num, $c[$i]) }",
+        ]);
+        assert!(is_known_safe_command(&cmd12));
+
+        // 13) Read a slice of a file with Get-Content and Select-Object
+        let cmd13 = vec_str(&[
+            "pwsh",
+            "-c",
+            "(Get-Content core/src/parse_command.rs | Select-Object -First 220) -join \"`n\"",
+        ]);
+        assert!(is_known_safe_command(&cmd13));
+
+        // 14) Read a file in chunks of 200 lines
+        let cmd14 = vec_str(&[
+            "pwsh",
+            "-Command",
+            "$lines = Get-Content src/game2d.rs; $lines.Count; $start=1; while ($start -le $lines.Count) { Write-Host \"--- src/game2d.rs lines $start..$([Math]::Min($start+199,$lines.Count)) ---\"; $lines[$start-1..([Math]::Min($start+199,$lines.Count)-1)]; $start += 200 }",
+        ]);
+        assert!(is_known_safe_command(&cmd14));
+
+        // 15) Read a file with Measure-Object and Select-Object
+        let cmd15 = vec_str(&[
+            "pwsh",
+            "-NoLogo",
+            "-Command",
+            "Get-Content src/map.rs | Measure-Object -Line | % Lines; Get-Content src/map.rs | Select-Object -First 260; echo '...'; Get-Content src/map.rs | Select-Object -Skip 260 -First 260",
+        ]);
+        assert!(is_known_safe_command(&cmd15));
+
+        // 16) Read multiple files with Get-Content and Write-Host
+        let cmd16 = vec_str(&[
+            "pwsh",
+            "-NoLogo",
+            "-Command",
+            "Write-Host \"# FILE: src/lib.rs\"; Get-Content src/lib.rs -TotalCount 250; Write-Host \"`n# FILE: src/app.rs (if exists)\"; if (Test-Path src/app.rs) { Get-Content src/app.rs -TotalCount 250 } else { Write-Host \"(no src/app.rs)\" }",
+        ]);
+        assert!(is_known_safe_command(&cmd16));
+
+        // 17) Read a file with Get-Content and format output
+        let cmd17 = vec_str(&[
+            "pwsh",
+            "-Command",
+            "$path = 'core/src/is_safe_command.rs'; $c = Get-Content $path; $start=430; $end=540; for ($i=$start; $i -le $end -and $i -le $c.Length; $i++) { $num=$i; \"{0,4}: {1}\" -f $num, $c[$i-1] }",
+        ]);
+        assert!(is_known_safe_command(&cmd17));
+    }
+
+    #[test]
+    fn powershell_read_only_examples_with_commands() {
+        // 1) Cargo check command
+        let cmd1 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "cargo check -p mycrate",
+        ]);
+        assert!(is_known_safe_command(&cmd1));
+
+        // 2) Ripgrep command with context
+        let cmd2 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "rg -n -C 10 \"fn is_powershell_read_only_script\" core/src/is_safe_command.rs; rg -n -C 10 \"try_extract_powershell_command_script\" core/src/is_safe_command.rs",
+        ]);
+        assert!(is_known_safe_command(&cmd2));
+    }
+
+    #[test]
+    fn powershell_mutating_is_rejected() {
+        let cmd = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Remove-Item -Recurse -Force .\\foo",
+        ]);
+        assert!(!is_known_safe_command(&cmd));
+    }
+
+    #[test]
+    fn powershell_mutating_with_aliases_is_rejected() {
+        let cmd1 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "rm -Recurse -Force .\\foo",
+        ]);
+        assert!(!is_known_safe_command(&cmd1));
+
+        let cmd2 = vec_str(&[
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "cargo test -p mycrate -- --nocapture",
+        ]);
+        assert!(!is_known_safe_command(&cmd2));
     }
 }
