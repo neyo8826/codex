@@ -1,11 +1,12 @@
 use crate::bash::try_parse_bash;
 use crate::bash::try_parse_word_only_commands_sequence;
+use crate::powershell_utils::{parse_cmd_exe_commands, parse_powershell_commands};
 use codex_protocol::parse_command::ParsedCommand;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
 use std::path::PathBuf;
 
-fn shlex_join(tokens: &[String]) -> String {
+pub(crate) fn shlex_join(tokens: &[String]) -> String {
     shlex_try_join(tokens.iter().map(String::as_str))
         .unwrap_or_else(|_| "<command included NUL byte>".to_string())
 }
@@ -841,10 +842,423 @@ mod tests {
             }],
         );
     }
+
+    #[test]
+    fn powershell_select_string_basic() {
+        assert_parsed(
+            &vec_str(&["powershell", "-Command", "Select-String -Pattern 'TODO'"]),
+            vec![ParsedCommand::Search {
+                cmd: "Select-String -Pattern 'TODO'".to_string(),
+                query: Some("TODO".to_string()),
+                path: None,
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_childitem_with_path() {
+        assert_parsed(
+            &vec_str(&[
+                "powershell",
+                "-Command",
+                "Get-ChildItem -Path 'C\\project\\src' -Recurse",
+            ]),
+            vec![ParsedCommand::Search {
+                cmd: "Get-ChildItem -Path 'C\\project\\src' -Recurse".to_string(),
+                query: None,
+                path: Some("project".to_string()),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_read_file() {
+        assert_parsed(
+            &vec_str(&["powershell", "-Command", "Get-Content -Path '.\\README.md'"]),
+            vec![ParsedCommand::Read {
+                cmd: "Get-Content -Path '.\\README.md'".to_string(),
+                name: "README.md".to_string(),
+                path: PathBuf::from(".\\README.md"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_with_range() {
+        assert_parsed(
+            &vec_str(&["powershell", "-Command", "$f='C:\\Users\\User\\.cargo\\registry\\src\\...\\virt.rs'; $c=Get-Content $f; $c[80..120]"]),
+            vec![ParsedCommand::Read {
+                cmd: "$f='C:\\Users\\User\\.cargo\\registry\\src\\...\\virt.rs'; $c=Get-Content $f; $c[80..120]".to_string(),
+                name: "virt.rs".to_string(),
+                path: PathBuf::from("C:\\Users\\User\\.cargo\\registry\\src\\...\\virt.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_with_select_string() {
+        assert_parsed(
+            &vec_str(&["powershell", "-Command", "$f='C:\\Users\\User\\.cargo\\registry\\src\\...\\time.rs'; Get-Content $f | Select-String -Pattern 'advance_by|from_millis(500)|MAX' -Context 2,2 | ForEach-Object { $_ }"]),
+            vec![ParsedCommand::Read {
+                cmd: "$f='C:\\Users\\User\\.cargo\\registry\\src\\...\\time.rs'; Get-Content $f | Select-String -Pattern 'advance_by|from_millis(500)|MAX' -Context 2,2 | ForEach-Object { $_ }".to_string(),
+                name: "time.rs".to_string(),
+                path: PathBuf::from("C:\\Users\\User\\.cargo\\registry\\src\\...\\time.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_with_range_and_join() {
+        assert_parsed(
+            &vec_str(&["powershell", "-Command", "$c = Get-Content core/src/is_safe_command.rs; $start=460; $end=520; $c[($start-1)..($end-1)] -join \"`n\""]),
+            vec![ParsedCommand::Read {
+                cmd: "$c = Get-Content core/src/is_safe_command.rs; $start=460; $end=520; $c[($start-1)..($end-1)] -join \"`n\"".to_string(),
+                name: "is_safe_command.rs".to_string(),
+                path: PathBuf::from("core/src/is_safe_command.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_with_select_object() {
+        assert_parsed(
+            &vec_str(&["powershell", "-Command", "Get-Content -Path src/character.rs -TotalCount 800 | Select-Object -Index ((520-1)..(800-1)) | Out-String"]),
+            vec![ParsedCommand::Read {
+                cmd: "Get-Content -Path src/character.rs -TotalCount 800 | Select-Object -Index ((520-1)..(800-1)) | Out-String".to_string(),
+                name: "character.rs".to_string(),
+                path: PathBuf::from("src/character.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_childitem_with_where_object() {
+        assert_parsed(
+            &vec_str(&["powershell", "-Command", "Get-ChildItem -Recurse -File | Where-Object {$_.Name -match '\"mod\\\\.rs\"'} | Select-Object -Expand FullName"]),
+            vec![ParsedCommand::Search {
+                cmd: "Get-ChildItem -Recurse -File | Where-Object {$_.Name -match '\"mod\\\\.rs\"'} | Select-Object -Expand FullName".to_string(),
+                path: None,
+                query: Some("mod.rs".to_string()),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_multiple_files() {
+        assert_parsed(
+            &vec_str(&["powershell", "-Command",  "Get-Content -Path multiplayer/Cargo.toml, doc/README.md, singleplayer/Cargo.toml -Raw | Write-Output"]),
+            vec![
+                ParsedCommand::Read {
+                    cmd: "Get-Content -Path multiplayer/Cargo.toml, doc/README.md, singleplayer/Cargo.toml -Raw | Write-Output".to_string(),
+                    name: "Cargo.toml".to_string(),
+                    path: PathBuf::from("multiplayer/Cargo.toml"),
+                },
+                ParsedCommand::Read {
+                    cmd: "Get-Content -Path multiplayer/Cargo.toml, doc/README.md, singleplayer/Cargo.toml -Raw | Write-Output".to_string(),
+                    name: "README.md".to_string(),
+                    path: PathBuf::from("doc/README.md"),
+                },
+            ],
+        );
+    }
+    #[test]
+    fn powershell_cargo_fmt_and_test() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-Command",
+                "cargo fmt && cargo test -p codex-core -- --nocapture",
+            ]),
+            vec![
+                ParsedCommand::Unknown {
+                    cmd: "cargo fmt".to_string(),
+                },
+                ParsedCommand::Unknown {
+                    cmd: "cargo test -p codex-core -- --nocapture".to_string(),
+                },
+            ],
+        );
+    }
+    #[test]
+    fn powershell_ripgrep() {
+        assert_parsed(
+            &vec_str(&["pwsh", "-Command", "rg -n 'a b' -g '*.rs' -g '*.md' src"]),
+            vec![ParsedCommand::Search {
+                cmd: "rg -n 'a b' -g '*.rs' -g '*.md' src".to_string(),
+                query: Some("a b".to_string()),
+                path: Some("src".to_string()),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_ripgrep_with_select_object() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                "rg -n 'test_dash|dash' src | Select-Object -First 200",
+            ]),
+            vec![ParsedCommand::Search {
+                cmd: "rg -n 'test_dash|dash' src | Select-Object -First 200".to_string(),
+                query: Some("test_dash|dash".to_string()),
+                path: Some("src".to_string()),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_with_select_object_last() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-Command",
+                "Get-Content -Path src/character.rs -TotalCount 800 | Select-Object -Last 260",
+            ]),
+            vec![ParsedCommand::Read {
+                cmd: "Get-Content -Path src/character.rs -TotalCount 800 | Select-Object -Last 260"
+                    .to_string(),
+                name: "character.rs".to_string(),
+                path: PathBuf::from("src/character.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_select_string_with_for_each_object() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-c",
+                "Select-String -Path core/src/parse_command.rs -Pattern powershell,pwsh -SimpleMatch | ForEach-Object { \"{0}:{1}\" -f $_.LineNumber, $_.Line }",
+            ]),
+            vec![ParsedCommand::Search {
+                cmd: "Select-String -Path core/src/parse_command.rs -Pattern powershell,pwsh -SimpleMatch | ForEach-Object { \"{0}:{1}\" -f $_.LineNumber, $_.Line }"
+                    .to_string(),
+                query: Some("powershell,pwsh".to_string()),
+                path: Some("parse_command.rs".to_string()),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_ripgrep_with_file() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-c",
+                "rg -n \"asd asd\" \"C:\\Users\\User\\myfile.txt\" -S",
+            ]),
+            vec![ParsedCommand::Search {
+                cmd: "rg -n \"asd asd\" \"C:\\Users\\User\\myfile.txt\" -S".to_string(),
+                query: Some("asd asd".to_string()),
+                path: Some("myfile.txt".to_string()),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_ripgrep_with_file_variable() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-c",
+                "$file = \"C:\\Users\\User\\myfile.txt\"; rg -n \"asd asd\" $file -S",
+            ]),
+            vec![ParsedCommand::Search {
+                cmd: "rg -n \"asd asd\" C:\\Users\\User\\myfile.txt -S".to_string(),
+                query: Some("asd asd".to_string()),
+                path: Some("myfile.txt".to_string()),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_with_for_each_object() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-NoLogo",
+                "-NoProfile",
+                "-c",
+                "$c = Get-Content core/src/is_safe_command.rs; for ($i=120; $i -le 180 -and $i -lt $c.Length; $i++) { $num=$i+1; Write-Output (\"{0,4}: {1}\" -f $num, $c[$i]) }",
+            ]),
+            vec![ParsedCommand::Read {
+                cmd: "$c = Get-Content core/src/is_safe_command.rs; for ($i=120; $i -le 180 -and $i -lt $c.Length; $i++) { $num=$i+1; Write-Output (\"{0,4}: {1}\" -f $num, $c[$i]) }"
+                    .to_string(),
+                name: "is_safe_command.rs".to_string(),
+                path: PathBuf::from("core/src/is_safe_command.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_get_content_with_select_object_first() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-c",
+                "(Get-Content core/src/parse_command.rs | Select-Object -First 220) -join \"`n\"",
+            ]),
+            vec![ParsedCommand::Read {
+                cmd: "(Get-Content core/src/parse_command.rs | Select-Object -First 220) -join \"`n\"".to_string(),
+                name: "parse_command.rs".to_string(),
+                path: PathBuf::from("core/src/parse_command.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn pwsh_short_flag_variants() {
+        assert_parsed(
+            &vec_str(&["pwsh", "-c", "Get-Content 'C:\\file.txt'"]),
+            vec![ParsedCommand::Read {
+                cmd: "Get-Content 'C:\\file.txt'".to_string(),
+                name: "file.txt".to_string(),
+                path: PathBuf::from("C:\\file.txt"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_command_with_cargo_check() {
+        assert_parsed(
+            &vec_str(&[
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "cargo check -p mycrate",
+            ]),
+            vec![ParsedCommand::Unknown {
+                cmd: "cargo check -p mycrate".to_string(),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_command_with_cargo_test() {
+        assert_parsed(
+            &vec_str(&[
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "cargo test -p mycrate",
+            ]),
+            vec![ParsedCommand::Unknown {
+                cmd: "cargo test -p mycrate".to_string(),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_read_file_with_type() {
+        assert_parsed(
+            &vec_str(&["pwsh", "-Command", "type mcp-client/src/mcp_client.rs"]),
+            vec![ParsedCommand::Read {
+                cmd: "type mcp-client/src/mcp_client.rs".to_string(),
+                name: "mcp_client.rs".to_string(),
+                path: PathBuf::from("mcp-client/src/mcp_client.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_read_file_in_chunks() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-Command",
+                "$lines = Get-Content src/game2d.rs; $lines.Count; $start=1; while ($start -le $lines.Count) { Write-Host \"--- src/game2d.rs lines $start..$([Math]::Min($start+199,$lines.Count)) ---\"; $lines[$start-1..([Math]::Min($start+199,$lines.Count)-1)]; $start += 200 }",
+            ]),
+            vec![ParsedCommand::Read {
+                cmd: "$lines = Get-Content src/game2d.rs; $lines.Count; $start=1; while ($start -le $lines.Count) { Write-Host \"--- src/game2d.rs lines $start..$([Math]::Min($start+199,$lines.Count)) ---\"; $lines[$start-1..([Math]::Min($start+199,$lines.Count)-1)]; $start += 200 }".to_string(),
+                name: "game2d.rs".to_string(),
+                path: PathBuf::from("src/game2d.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_read_file_with_measure_object() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-Command",
+                "Get-Content src/map.rs | Measure-Object -Line | % Lines; Get-Content src/map.rs | Select-Object -First 260; echo '...'; Get-Content src/map.rs | Select-Object -Skip 260 -First 260",
+            ]),
+            vec![ParsedCommand::Read {
+                cmd: "Get-Content src/map.rs | Measure-Object -Line | % Lines; Get-Content src/map.rs | Select-Object -First 260; echo '...'; Get-Content src/map.rs | Select-Object -Skip 260 -First 260".to_string(),
+                name: "map.rs".to_string(),
+                path: PathBuf::from("src/map.rs"),
+            }],
+        );
+    }
+    #[test]
+    fn powershell_read_multiple_files_with_get_content() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-NoLogo",
+                "-Command",
+                "Write-Host \"# FILE: src/lib.rs\"; Get-Content src/lib.rs -TotalCount 250; Write-Host \"`n# FILE: src/app.rs (if exists)\"; if (Test-Path src/app.rs) { Get-Content src/app.rs -TotalCount 250 } else { Write-Host \"(no src/app.rs)\" }",
+            ]),
+            vec![
+                ParsedCommand::Read {
+                    cmd: "Write-Host \"# FILE: src/lib.rs\"; Get-Content src/lib.rs -TotalCount 250; Write-Host \"`n# FILE: src/app.rs (if exists)\"; if (Test-Path src/app.rs) { Get-Content src/app.rs -TotalCount 250 } else { Write-Host \"(no src/app.rs)\" }".to_string(),
+                    name: "lib.rs".to_string(),
+                    path: PathBuf::from("src/lib.rs"),
+                },
+                ParsedCommand::Read {
+                    cmd: "Write-Host \"# FILE: src/lib.rs\"; Get-Content src/lib.rs -TotalCount 250; Write-Host \"`n# FILE: src/app.rs (if exists)\"; if (Test-Path src/app.rs) { Get-Content src/app.rs -TotalCount 250 } else { Write-Host \"(no src/app.rs)\" }".to_string(),
+                    name: "app.rs".to_string(),
+                    path: PathBuf::from("src/app.rs"),
+                },
+            ],
+        );
+    }
+    #[test]
+    fn powershell_read_file_with_get_content_and_range() {
+        assert_parsed(
+            &vec_str(&[
+                "pwsh",
+                "-Command",
+                "$path = 'core/src/is_safe_command.rs'; $c = Get-Content $path; $start=430; $end=540; for ($i=$start; $i -le $end -and $i -le $c.Length; $i++) { $num=$i; \"{0,4}: {1}\" -f $num, $c[$i-1] }",
+            ]),
+            vec![ParsedCommand::Read {
+                cmd: "$path = 'core/src/is_safe_command.rs'; $c = Get-Content $path; $start=430; $end=540; for ($i=$start; $i -le $end -and $i -le $c.Length; $i++) { $num=$i; \"{0,4}: {1}\" -f $num, $c[$i-1] }".to_string(),
+                name: "is_safe_command.rs".to_string(),
+                path: PathBuf::from("core/src/is_safe_command.rs"),
+            }],
+        );
+    }
+
+    #[test]
+    fn cmd_type_reads_file() {
+        assert_parsed(
+            &vec_str(&["cmd.exe", "/c", "type README.md"]),
+            vec![ParsedCommand::Read {
+                cmd: "cmd.exe /c type README.md".to_string(),
+                name: "README.md".to_string(),
+                path: PathBuf::from("README.md"),
+            }],
+        );
+    }
+    #[test]
+    fn cmd_findstr_searches_query() {
+        assert_parsed(
+            &vec_str(&["cmd.exe", "/c", "findstr /n \"TODO\" ."]),
+            vec![ParsedCommand::Search {
+                cmd: "cmd.exe /c findstr /n \"TODO\" .".to_string(),
+                query: Some("TODO".to_string()),
+                path: None,
+            }],
+        );
+    }
+    #[test]
+    fn cmd_dir_lists_files() {
+        assert_parsed(
+            &vec_str(&["cmd", "/c", "dir ."]),
+            vec![ParsedCommand::ListFiles {
+                cmd: "cmd /c dir .".to_string(),
+                path: None,
+            }],
+        );
+    }
 }
 
 pub fn parse_command_impl(command: &[String]) -> Vec<ParsedCommand> {
     if let Some(commands) = parse_bash_lc_commands(command) {
+        return commands;
+    }
+    if let Some(commands) = parse_powershell_commands(command) {
+        return commands;
+    }
+    if let Some(commands) = parse_cmd_exe_commands(command) {
         return commands;
     }
 
@@ -900,7 +1314,7 @@ pub fn parse_command_impl(command: &[String]) -> Vec<ParsedCommand> {
     commands
 }
 
-fn simplify_once(commands: &[ParsedCommand]) -> Option<Vec<ParsedCommand>> {
+pub(crate) fn simplify_once(commands: &[ParsedCommand]) -> Option<Vec<ParsedCommand>> {
     if commands.len() <= 1 {
         return None;
     }
@@ -1039,7 +1453,7 @@ fn trim_at_connector(tokens: &[String]) -> Vec<String> {
 /// - webview/src -> webview
 /// - foo/src/ -> foo
 /// - packages/app/node_modules/ -> app
-fn short_display_path(path: &str) -> String {
+pub(crate) fn short_display_path(path: &str) -> String {
     // Normalize separators and drop any trailing slash for display.
     let normalized = path.replace('\\', "/");
     let trimmed = normalized.trim_end_matches('/');
@@ -1326,7 +1740,7 @@ fn drop_small_formatting_commands(mut commands: Vec<Vec<String>>) -> Vec<Vec<Str
     commands
 }
 
-fn summarize_main_tokens(main_cmd: &[String]) -> ParsedCommand {
+pub(crate) fn summarize_main_tokens(main_cmd: &[String]) -> ParsedCommand {
     match main_cmd.split_first() {
         Some((head, tail)) if head == "ls" => {
             // Avoid treating option values as paths (e.g., ls -I "*.test.js").
@@ -1354,12 +1768,43 @@ fn summarize_main_tokens(main_cmd: &[String]) -> ParsedCommand {
         Some((head, tail)) if head == "rg" => {
             let args_no_connector = trim_at_connector(tail);
             let has_files_flag = args_no_connector.iter().any(|a| a == "--files");
-            let non_flags: Vec<&String> = args_no_connector
-                .iter()
+
+            // Skip values for flags that take an argument (e.g., -g/--glob)
+            // when identifying positional operands. We'll separately extract
+            // the -g/--glob value if needed for the --files case.
+            let candidates = skip_flag_values(&args_no_connector, &["-g", "--glob"]);
+            let non_flags: Vec<&String> = candidates
+                .into_iter()
                 .filter(|p| !p.starts_with('-'))
                 .collect();
+
             let (query, path) = if has_files_flag {
-                (None, non_flags.first().map(|s| short_display_path(s)))
+                // Prefer an explicit positional path operand if present (e.g.,
+                // `rg --files some/dir`). Otherwise, fall back to the first
+                // provided glob value (e.g., `-g '!target'`).
+                let path = non_flags
+                    .first()
+                    .map(|s| short_display_path(s))
+                    .or_else(|| {
+                        // Extract first -g/--glob value (supporting both split and = forms).
+                        let mut i = 0usize;
+                        while i < args_no_connector.len() {
+                            let a = &args_no_connector[i];
+                            if a == "-g" || a == "--glob" {
+                                if i + 1 < args_no_connector.len() {
+                                    return Some(args_no_connector[i + 1].clone());
+                                }
+                            } else if let Some(eq_pos) = a.find('=') {
+                                let (flag, val) = a.split_at(eq_pos);
+                                if flag == "--glob" || flag == "-g" {
+                                    return Some(val[1..].to_string());
+                                }
+                            }
+                            i += 1;
+                        }
+                        None
+                    });
+                (None, path)
             } else {
                 (
                     non_flags.first().cloned().map(String::from),

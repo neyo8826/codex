@@ -60,6 +60,7 @@ pub mod default_client;
 pub mod model_family;
 mod openai_model_info;
 mod openai_tools;
+mod powershell_utils;
 pub mod project_doc;
 mod rollout;
 pub(crate) mod safety;
