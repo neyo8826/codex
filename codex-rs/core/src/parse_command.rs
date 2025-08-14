@@ -421,6 +421,18 @@ mod tests {
     }
 
     #[test]
+    fn echo_then_cargo_check_sequence() {
+        assert_parsed(
+            &shlex_split_safe("echo Running tests... && cargo check --all-features"),
+            vec![ParsedCommand::Lint {
+                cmd: "cargo check --all-features".to_string(),
+                tool: Some("cargo check".to_string()),
+                targets: None,
+            }],
+        );
+    }
+
+    #[test]
     fn supports_cargo_fmt_and_test_with_config() {
         assert_parsed(
             &shlex_split_safe(
@@ -1748,6 +1760,15 @@ fn summarize_main_tokens(main_cmd: &[String]) -> ParsedCommand {
             ParsedCommand::Lint {
                 cmd: shlex_join(main_cmd),
                 tool: Some("cargo clippy".to_string()),
+                targets: collect_non_flag_targets(&tail[1..]),
+            }
+        }
+        Some((head, tail))
+            if head == "cargo" && tail.first().map(|s| s.as_str()) == Some("check") =>
+        {
+            ParsedCommand::Lint {
+                cmd: shlex_join(main_cmd),
+                tool: Some("cargo check".to_string()),
                 targets: collect_non_flag_targets(&tail[1..]),
             }
         }
