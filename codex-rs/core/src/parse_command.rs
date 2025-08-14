@@ -101,6 +101,7 @@ mod tests {
         args.iter().map(|s| s.to_string()).collect()
     }
 
+    #[track_caller]
     fn assert_parsed(args: &[String], expected: Vec<ParsedCommand>) {
         let out = parse_command(args);
         assert_eq!(out, expected);
