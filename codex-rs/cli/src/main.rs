@@ -1,4 +1,4 @@
-use clap::Args;
+use clap::{Args, ValueEnum};
 use clap::CommandFactory;
 use clap::Parser;
 use clap_complete::Shell;
@@ -211,11 +211,27 @@ enum Subcommand {
     Features(FeaturesCli),
 }
 
+#[derive(Debug, Clone, ValueEnum)]
+enum CompletionShell {
+    /// Bourne Again `SHell` (bash)
+    Bash,
+    /// Elvish shell
+    Elvish,
+    /// Friendly Interactive `SHell` (fish)
+    Fish,
+    /// `PowerShell`
+    PowerShell,
+    /// Z `SHell` (zsh)
+    Zsh,
+    /// `Nushell`
+    Nushell,
+}
+
 #[derive(Debug, Parser)]
 struct CompletionCommand {
     /// Shell to generate completions for
-    #[clap(value_enum, default_value_t = Shell::Bash)]
-    shell: Shell,
+    #[clap(value_enum, default_value_t = CompletionShell::Bash)]
+    shell: CompletionShell,
 }
 
 #[derive(Debug, Parser)]
@@ -2488,9 +2504,25 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
 }
 
 fn print_completion(cmd: CompletionCommand) {
+    enum ParsedShell {
+        Clap(Shell),
+        Nushell(clap_complete_nushell::Nushell)
+    }
+
     let mut app = MultitoolCli::command();
     let name = "codex";
-    generate(cmd.shell, &mut app, name, &mut std::io::stdout());
+    let parsed_shell = match cmd.shell {
+        CompletionShell::Bash => ParsedShell::Clap(Shell::Bash),
+        CompletionShell::Elvish => ParsedShell::Clap(Shell::Elvish),
+        CompletionShell::Fish => ParsedShell::Clap(Shell::Fish),
+        CompletionShell::PowerShell => ParsedShell::Clap(Shell::PowerShell),
+        CompletionShell::Zsh => ParsedShell::Clap(Shell::Zsh),
+        CompletionShell::Nushell => ParsedShell::Nushell(clap_complete_nushell::Nushell),
+    };
+    match parsed_shell {
+        ParsedShell::Clap(shell) => generate(shell, &mut app, name, &mut std::io::stdout()),
+        ParsedShell::Nushell(shell) => generate(shell, &mut app, name, &mut std::io::stdout())
+    };
 }
 
 #[cfg(test)]
