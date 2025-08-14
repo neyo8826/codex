@@ -1,6 +1,6 @@
 use clap::CommandFactory;
 use clap::Parser;
-use clap_complete::Shell;
+use clap::ValueEnum;
 use clap_complete::generate;
 use codex_arg0::arg0_dispatch_or_else;
 use codex_chatgpt::apply_command::ApplyCommand;
@@ -108,11 +108,27 @@ enum Subcommand {
     Features(FeaturesCli),
 }
 
+#[derive(Debug, Clone, ValueEnum)]
+enum CompletionShell {
+    /// Bourne Again `SHell` (bash)
+    Bash,
+    /// Elvish shell
+    Elvish,
+    /// Friendly Interactive `SHell` (fish)
+    Fish,
+    /// `PowerShell`
+    PowerShell,
+    /// Z `SHell` (zsh)
+    Zsh,
+    /// `Nushell`
+    Nushell,
+}
+
 #[derive(Debug, Parser)]
 struct CompletionCommand {
     /// Shell to generate completions for
-    #[clap(value_enum, default_value_t = Shell::Bash)]
-    shell: Shell,
+    #[clap(value_enum, default_value_t = CompletionShell::Bash)]
+    shell: CompletionShell,
 }
 
 #[derive(Debug, Parser)]
@@ -574,9 +590,30 @@ fn merge_resume_cli_flags(interactive: &mut TuiCli, resume_cli: TuiCli) {
 }
 
 fn print_completion(cmd: CompletionCommand) {
+    use clap_complete::Shell as ClapShell;
+
     let mut app = MultitoolCli::command();
     let name = "codex";
-    generate(cmd.shell, &mut app, name, &mut std::io::stdout());
+    match cmd.shell {
+        CompletionShell::Bash => generate(ClapShell::Bash, &mut app, name, &mut std::io::stdout()),
+        CompletionShell::Elvish => {
+            generate(ClapShell::Elvish, &mut app, name, &mut std::io::stdout())
+        }
+        CompletionShell::Fish => generate(ClapShell::Fish, &mut app, name, &mut std::io::stdout()),
+        CompletionShell::PowerShell => generate(
+            ClapShell::PowerShell,
+            &mut app,
+            name,
+            &mut std::io::stdout(),
+        ),
+        CompletionShell::Zsh => generate(ClapShell::Zsh, &mut app, name, &mut std::io::stdout()),
+        CompletionShell::Nushell => generate(
+            clap_complete_nushell::Nushell,
+            &mut app,
+            name,
+            &mut std::io::stdout(),
+        ),
+    }
 }
 
 #[cfg(test)]

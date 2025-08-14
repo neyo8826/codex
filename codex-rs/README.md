@@ -69,6 +69,7 @@ Generate shell completion scripts via:
 codex completion bash
 codex completion zsh
 codex completion fish
+codex completion nushell
 ```
 
 ### Experimenting with the Codex Sandbox
