@@ -279,6 +279,7 @@ chardetng = "0.1.17"
 chrono = "0.4.43"
 clap = "4"
 clap_complete = "4"
+clap_complete_nushell = "4"
 clatter = { version = "2.2.0", default-features = false, features = [
     "alloc",
     "getrandom",
