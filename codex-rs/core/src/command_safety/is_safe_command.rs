@@ -103,13 +103,25 @@ fn is_safe_to_call_with_exec(command: &[String]) -> bool {
         // Rust
         Some("cargo") if command.get(1).map(String::as_str) == Some("check") => true,
 
-        // Special-case `sed -n {N|M,N}p FILE`
+        // Special-case `sed -n {N|M,N}p [FILE]`
+        // Allow both forms:
+        //  - reading from a file:  sed -n 1,200p file.txt
+        //  - reading from stdin:   sed -n 1,200p
         Some("sed")
             if {
-                command.len() == 4
-                    && command.get(1).map(String::as_str) == Some("-n")
-                    && is_valid_sed_n_arg(command.get(2).map(String::as_str))
-                    && command.get(3).map(String::is_empty) == Some(false)
+                let has_dash_n = command.get(1).map(String::as_str) == Some("-n");
+                let valid_range = is_valid_sed_n_arg(command.get(2).map(String::as_str));
+                if !(has_dash_n && valid_range) {
+                    false
+                } else {
+                    match command.len() {
+                        // stdin variant
+                        3 => true,
+                        // file variant (non-empty filename)
+                        4 => command.get(3).map(String::is_empty) == Some(false),
+                        _ => false,
+                    }
+                }
             } =>
         {
             true
@@ -184,6 +196,14 @@ mod tests {
         // Safe `find` command (no unsafe options).
         assert!(is_safe_to_call_with_exec(&vec_str(&[
             "find", ".", "-name", "file.txt"
+        ])));
+
+        // Safe `sed` command with wildcard in file path.
+        assert!(is_safe_to_call_with_exec(&vec_str(&[
+            "sed",
+            "-n",
+            "1,200p",
+            "/home/user/.cache/bazel/*/defs.bzl"
         ])));
     }
 
@@ -280,6 +300,12 @@ mod tests {
             "-lc",
             "find . -name file.txt"
         ])));
+
+        assert!(is_known_safe_command(&vec_str(&[
+            "bash",
+            "-lc",
+            "ls -la /home/user/.cache/bazel | sed -n '1,200p'"
+        ])));
     }
 
     #[test]
@@ -303,6 +329,16 @@ mod tests {
             "bash",
             "-lc",
             "ls | wc -l"
+        ])));
+        assert!(is_known_safe_command(&vec_str(&[
+            "bash",
+            "-lc",
+            "ls -d bazel-*/external/rules_cuda/cuda | head -n1"
+        ])));
+        assert!(is_known_safe_command(&vec_str(&[
+            "bash",
+            "-lc",
+            "sed -n '1,200p' /home/attila/.cache/bazel/*/defs.bzl | sed -n '1,200p'"
         ])));
     }
 
