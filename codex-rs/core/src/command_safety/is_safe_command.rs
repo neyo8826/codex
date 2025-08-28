@@ -4,6 +4,7 @@ use crate::powershell_utils::{
     try_extract_powershell_command_script,
 };
 use codex_protocol::parse_command::ParsedCommand;
+use shlex::split as shlex_split;
 
 pub fn is_known_safe_command(command: &[String]) -> bool {
     #[cfg(target_os = "windows")]
@@ -29,6 +30,17 @@ pub fn is_known_safe_command(command: &[String]) -> bool {
         && all_commands
             .iter()
             .all(|cmd| is_safe_to_call_with_exec(cmd))
+    {
+        return true;
+    }
+
+    // Fallback for bash -lc: allow a conservative read-only subset with
+    // simple variable assignments and $(...) substitutions, combined with
+    // pipes/&&/||/; between known-safe commands.
+    if let [bash, flag, script] = command
+        && bash == "bash"
+        && flag == "-lc"
+        && is_bash_read_only_with_assignments(script)
     {
         return true;
     }
@@ -75,6 +87,39 @@ pub fn is_known_safe_command(command: &[String]) -> bool {
 }
 
 fn is_safe_to_call_with_exec(command: &[String]) -> bool {
+    // If this vector encodes a pipeline/sequence using tokens like "|", "&&", "||", ";",
+    // split and ensure every sub-command is itself safe, and that no redirections appear.
+    if command
+        .iter()
+        .any(|s| s == "|" || s == "&&" || s == "||" || s == ";")
+    {
+        // Quick rejection for obvious mutation/redirection/backgrounding tokens.
+        if command
+            .iter()
+            .any(|s| s == ">" || s == ">>" || s == "<" || s == "|&")
+        {
+            return false;
+        }
+
+        let mut parts: Vec<Vec<String>> = Vec::new();
+        let mut current: Vec<String> = Vec::new();
+        for tok in command {
+            match tok.as_str() {
+                "|" | "&&" | "||" | ";" => {
+                    if !current.is_empty() {
+                        parts.push(std::mem::take(&mut current));
+                    }
+                }
+                _ => current.push(tok.clone()),
+            }
+        }
+        if !current.is_empty() {
+            parts.push(current);
+        }
+
+        return !parts.is_empty() && parts.iter().all(|p| is_safe_to_call_with_exec(p));
+    }
+
     let cmd0 = command.first().map(String::as_str);
 
     match cmd0 {
@@ -159,18 +204,25 @@ fn is_safe_to_call_with_exec(command: &[String]) -> bool {
         //  - reading from stdin:   sed -n 1,200p
         Some("sed")
             if {
-                let has_dash_n = command.get(1).map(String::as_str) == Some("-n");
-                let valid_range = is_valid_sed_n_arg(command.get(2).map(String::as_str));
-                if !(has_dash_n && valid_range) {
-                    false
-                } else {
-                    match command.len() {
-                        // stdin variant
-                        3 => true,
-                        // file variant (non-empty filename)
-                        4 => command.get(3).map(String::is_empty) == Some(false),
-                        _ => false,
+                // 1) Strict allow-list: `sed -n {N|M,N}p [FILE]`
+                let strict_ok = {
+                    let has_dash_n = command.get(1).map(String::as_str) == Some("-n");
+                    let valid_range = is_valid_sed_n_arg(command.get(2).map(String::as_str));
+                    if has_dash_n && valid_range {
+                        match command.len() {
+                            3 => true,
+                            4 => command.get(3).map(String::is_empty) == Some(false),
+                            _ => false,
+                        }
+                    } else {
+                        false
                     }
+                };
+
+                if strict_ok {
+                    true
+                } else {
+                    sed_flags_whitelisted(command)
                 }
             } =>
         {
@@ -221,6 +273,114 @@ fn is_valid_sed_n_arg(arg: Option<&str>) -> bool {
     }
 }
 
+fn sed_flags_whitelisted(command: &[String]) -> bool {
+    // Allowed short flags: -n, -e, -E, -r, -u, -s, -z, -l N
+    // Allowed combined short flags: any combo of [nErusz] (no e/l in combos)
+    // Allowed long flags (GNU/BSD): --quiet/--silent, --expression, --regexp-extended,
+    // --unbuffered, --null-data, --line-length=N
+    // Disallowed: -i/--in-place (and variants), -f/--file, anything unknown.
+
+    let mut i = 1usize; // start examining after the "sed" command
+    let mut saw_expression = false;
+    while i < command.len() {
+        let tok = &command[i];
+        let s = tok.as_str();
+        if !s.starts_with('-') {
+            i += 1;
+            continue; // script fragments (like '1,200p') or filenames
+        }
+
+        // In-place editing is always unsafe.
+        if s == "-i" || s.starts_with("-i") || s.starts_with("--in-place") {
+            return false;
+        }
+        // External script file is unsafe because we cannot vet it.
+        if s == "-f" || s == "--file" || s.starts_with("--file=") {
+            return false;
+        }
+
+        // Handle flags with required argument
+        if s == "-e" || s == "--expression" || s.starts_with("--expression=") {
+            if s == "-e" {
+                // needs a following argument
+                if i + 1 >= command.len() {
+                    return false;
+                }
+                saw_expression = true;
+                i += 2;
+                continue;
+            }
+            // --expression=SCRIPT is fine
+            saw_expression = true;
+            i += 1;
+            continue;
+        }
+        if s == "-l" || s == "--line-length" || s.starts_with("--line-length=") {
+            if s == "-l" || s == "--line-length" {
+                if i + 1 >= command.len() {
+                    return false;
+                }
+                let val = command[i + 1].as_str();
+                if !val.chars().all(|c| c.is_ascii_digit()) {
+                    return false;
+                }
+                i += 2;
+                continue;
+            }
+            // --line-length=N form; validate suffix is numeric
+            if let Some(eq) = s.find('=') {
+                let num = &s[eq + 1..];
+                if num.is_empty() || !num.chars().all(|c| c.is_ascii_digit()) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+            i += 1;
+            continue;
+        }
+
+        // Allow long no-arg flags
+        match s {
+            "--quiet" | "--silent" | "--regexp-extended" | "--unbuffered" | "--null-data" => {
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+
+        // Allow simple short flags and safe combinations
+        if s.starts_with('-') && s.len() > 1 {
+            // combined short options like -nErsuz (but not e/l which need args)
+            let mut ok = true;
+            for ch in s[1..].chars() {
+                match ch {
+                    'n' | 'E' | 'r' | 'u' | 's' | 'z' => {}
+                    // disallow combining options that expect arguments
+                    'e' | 'l' => {
+                        ok = false;
+                        break;
+                    }
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                i += 1;
+                continue;
+            }
+        }
+
+        // Unknown or unsafe flag encountered
+        return false;
+    }
+
+    // Require an explicit -e/--expression unless the strict `-n {..}p` form matched earlier.
+    saw_expression
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,6 +414,27 @@ mod tests {
             "-n",
             "1,200p",
             "/home/user/.cache/bazel/*/defs.bzl"
+        ])));
+
+        // Safe `sed` command reading from stdin.
+        assert!(is_safe_to_call_with_exec(&vec_str(&[
+            "sed",
+            "-n",
+            "13,24p",
+            "file.txt",
+            "|",
+            "sed",
+            "-n",
+            "1,200p",
+            "|",
+            "sed",
+            "-e",
+            "s/\\t/[TAB]/g",
+            "-e",
+            "s/ /[SP]/g",
+            "-n",
+            "-e",
+            "1,200p"
         ])));
     }
 
@@ -710,6 +891,20 @@ mod tests {
         assert!(is_known_safe_command(&vec_str(&[
             "bazel", "query", "//..."
         ])));
+
+        // Complex bash -lc with bazel info and ls and rg
+        assert!(is_known_safe_command(&vec_str(&[
+            "bash",
+            "-lc",
+            "oot=$(bazel info execution_root) && ls -1 \"$root/external/+_repo_rules3+sysroot_linux_x86_64/usr/include/c++/13/bits\" | rg -n \"^c\\+\\+config\\.h$|^os_defines\\.h$|^cpu_defines\\.h$|^os\\.|c\\+\\+\" -n -S || true"
+        ])));
+
+        // Complex bash -lc with bazel info and find and sed
+        assert!(is_known_safe_command(&vec_str(&[
+            "bash",
+            "-lc",
+            "root=$(bazel info output_base)/sandbox/linux-sandbox/2761/execroot/_main && find \"$root\" -maxdepth 2 -type f -printf '%p\n' | sed -n '1,200p'"
+        ])));
     }
     #[test]
     fn bazel_query_commands_are_not_auto_approved() {
@@ -730,4 +925,152 @@ mod tests {
             "bazel", "vendor", "//..."
         ])));
     }
+}
+
+// ---- helpers for bash -lc fallback ----
+
+fn is_bash_read_only_with_assignments(script: &str) -> bool {
+    // Validate each $(...) substitution is itself a safe command.
+    let mut s = script.to_string();
+    loop {
+        let Some(start) = s.find("$(") else { break };
+        // find matching ')'
+        let mut depth = 1i32;
+        let mut i = start + 2;
+        let bytes = s.as_bytes();
+        let mut end_opt = None;
+        while i < s.len() {
+            let c = bytes[i] as char;
+            if c == '(' {
+                depth += 1;
+            } else if c == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    end_opt = Some(i);
+                    break;
+                }
+            }
+            i += 1;
+        }
+        let Some(end) = end_opt else { return false };
+        let inner = s[start + 2..end].trim();
+        let inner_tokens = shlex_split(inner)
+            .unwrap_or_else(|| inner.split_whitespace().map(ToString::to_string).collect());
+        if inner_tokens.is_empty() || !is_safe_to_call_with_exec(&inner_tokens) {
+            return false;
+        }
+        // Replace the whole $(...) with a placeholder to avoid false positives when scanning
+        s.replace_range(start..=end, "SUBST");
+    }
+
+    // Quick reject of redirections, backticks, and grouping.
+    if s.contains('`') || s.contains('<') || s.contains('>') || s.contains('{') || s.contains('}') {
+        return false;
+    }
+    // Reject standalone '&' (background). Allow '&&'.
+    if s.replace("&&", "").contains('&') {
+        return false;
+    }
+
+    // Split into segments by |, &&, ||, ; while respecting basic quotes.
+    let segments = split_on_shell_operators(&s);
+    if segments.is_empty() {
+        return false;
+    }
+    for seg in segments {
+        let trimmed = seg.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Allow pure variable assignment like: foo=BAR
+        if is_pure_assignment(trimmed) {
+            continue;
+        }
+        // Disallow assignment-prefix before a command (e.g., FOO=bar ls) for now.
+        if has_assignment_prefix(trimmed) {
+            return false;
+        }
+        let tokens = shlex_split(trimmed).unwrap_or_else(|| {
+            trimmed
+                .split_whitespace()
+                .map(ToString::to_string)
+                .collect()
+        });
+        if tokens.is_empty() || !is_safe_to_call_with_exec(&tokens) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_pure_assignment(s: &str) -> bool {
+    // NAME=VALUE with NAME=[A-Za-z_][A-Za-z0-9_]*
+    let Some(eq) = s.find('=') else { return false };
+    if s[..eq].chars().enumerate().all(|(i, c)| {
+        if i == 0 {
+            c.is_ascii_alphabetic() || c == '_'
+        } else {
+            c.is_ascii_alphanumeric() || c == '_'
+        }
+    }) && !s[..eq].is_empty()
+    {
+        // Ensure there are no spaces; treat it as a standalone assignment.
+        !s[..eq].contains(' ') && !s[eq + 1..].is_empty() && !s.contains(' ')
+    } else {
+        false
+    }
+}
+
+fn has_assignment_prefix(s: &str) -> bool {
+    // Detect patterns like NAME=value <rest>
+    if let Some(space) = s.find(' ') {
+        let head = &s[..space];
+        is_pure_assignment(head)
+    } else {
+        false
+    }
+}
+
+fn split_on_shell_operators(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    let mut chars = s.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                buf.push(c);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                buf.push(c);
+            }
+            '|' if !in_single && !in_double => {
+                parts.push(buf.trim().to_string());
+                buf.clear();
+            }
+            '&' if !in_single && !in_double => {
+                if matches!(chars.peek(), Some('&')) {
+                    // consume second '&'
+                    let _ = chars.next();
+                    parts.push(buf.trim().to_string());
+                    buf.clear();
+                } else {
+                    // standalone '&' not allowed
+                    return Vec::new();
+                }
+            }
+            ';' if !in_single && !in_double => {
+                parts.push(buf.trim().to_string());
+                buf.clear();
+            }
+            c2 => buf.push(c2),
+        }
+    }
+    if !buf.trim().is_empty() {
+        parts.push(buf.trim().to_string());
+    }
+    parts
 }
