@@ -166,6 +166,12 @@ fn is_safe_to_call_with_exec(command: &[String]) -> bool {
             }
         }
 
+        // Bazel (read-only queries)
+        Some("bazel") => matches!(
+            command.get(1).map(String::as_str),
+            Some("query" | "aquery" | "cquery" | "info")
+        ),
+
         // Special-case `sed -n {N|M,N}p`
         Some("sed")
             if {
@@ -588,5 +594,38 @@ mod tests {
             !is_known_safe_command(&vec_str(&["bash", "-lc", "ls > out.txt"])),
             "> redirection should be rejected"
         );
+    }
+
+    #[test]
+    fn bazel_commands_are_auto_approved() {
+        assert!(is_known_safe_command(&vec_str(&[
+            "bazel", "aquery", "//..."
+        ])));
+        assert!(is_known_safe_command(&vec_str(&[
+            "bazel", "cquery", "//..."
+        ])));
+        assert!(is_known_safe_command(&vec_str(&["bazel", "info"])));
+        assert!(is_known_safe_command(&vec_str(&[
+            "bazel", "query", "//..."
+        ])));
+    }
+    #[test]
+    fn bazel_query_commands_are_not_auto_approved() {
+        assert!(!is_known_safe_command(&vec_str(&[
+            "bazel", "build", "//..."
+        ])));
+        assert!(!is_known_safe_command(&vec_str(&[
+            "bazel", "clean", "//..."
+        ])));
+        assert!(!is_known_safe_command(&vec_str(&[
+            "bazel", "fetch", "//..."
+        ])));
+        assert!(!is_known_safe_command(&vec_str(&["bazel", "run", "//..."])));
+        assert!(!is_known_safe_command(&vec_str(&[
+            "bazel", "test", "//..."
+        ])));
+        assert!(!is_known_safe_command(&vec_str(&[
+            "bazel", "vendor", "//..."
+        ])));
     }
 }
