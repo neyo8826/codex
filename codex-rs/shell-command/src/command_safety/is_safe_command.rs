@@ -167,6 +167,12 @@ fn is_safe_to_call_with_exec(command: &[String]) -> bool {
             true
         }
 
+        // Bazel (read-only queries)
+        Some("bazel") if matches!(
+            command.get(1).map(String::as_str),
+            Some("query" | "aquery" | "cquery" | "info" | "help" | "license" | "print_action" | "version"),
+        ) => true,
+
         // ── anything else ─────────────────────────────────────────────────
         _ => false,
     }
@@ -798,5 +804,22 @@ mod tests {
         );
 
         fs::remove_dir_all(temp_dir).expect("remove temp dir");
+    }
+
+    #[test]
+    fn bazel_commands_are_auto_approved() {
+        assert!(is_known_safe_command(&vec_str(&["bazel", "aquery", "//..."])));
+        assert!(is_known_safe_command(&vec_str(&["bazel", "cquery", "//..."])));
+        assert!(is_known_safe_command(&vec_str(&["bazel", "info"])));
+        assert!(is_known_safe_command(&vec_str(&["bazel", "query", "//..."])));
+    }
+    #[test]
+    fn bazel_query_commands_are_not_auto_approved() {
+        assert!(!is_known_safe_command(&vec_str(&["bazel", "build", "//..."])));
+        assert!(!is_known_safe_command(&vec_str(&["bazel", "clean", "//..."])));
+        assert!(!is_known_safe_command(&vec_str(&["bazel", "fetch", "//..."])));
+        assert!(!is_known_safe_command(&vec_str(&["bazel", "run", "//..."])));
+        assert!(!is_known_safe_command(&vec_str(&["bazel", "test", "//..."])));
+        assert!(!is_known_safe_command(&vec_str(&["bazel", "vendor", "//..."])));
     }
 }
