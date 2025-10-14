@@ -126,8 +126,8 @@ fn strip_bash_lc(command: &[String]) -> Option<String> {
     match command {
         // exactly three items
         [first, second, third]
-            // first two must be "bash", "-lc"
-            if first == "bash" && second == "-lc" =>
+            // first must be "bash" or "zsh"; second must be "-lc"
+            if (first == "bash" || first == "zsh") && second == "-lc" =>
         {
             Some(third.clone())
         }

@@ -10,7 +10,9 @@ pub(crate) fn escape_command(command: &[String]) -> String {
 
 pub(crate) fn strip_bash_lc_and_escape(command: &[String]) -> String {
     match command {
-        [first, second, third] if first == "bash" && second == "-lc" => third.clone(),
+        [first, second, third] if (first == "bash" || first == "zsh") && second == "-lc" => {
+            third.clone()
+        }
         _ => escape_command(command),
     }
 }
@@ -49,5 +51,9 @@ mod tests {
         let args = vec!["bash".into(), "-lc".into(), "echo hello".into()];
         let cmdline = strip_bash_lc_and_escape(&args);
         assert_eq!(cmdline, "echo hello");
+
+        let zsh_args = vec!["zsh".into(), "-lc".into(), "echo hello".into()];
+        let zsh_cmdline = strip_bash_lc_and_escape(&zsh_args);
+        assert_eq!(zsh_cmdline, "echo hello");
     }
 }

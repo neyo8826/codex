@@ -91,11 +91,11 @@ pub fn try_parse_word_only_commands_sequence(tree: &Tree, src: &str) -> Option<V
 /// Returns the sequence of plain commands within a `bash -lc "..."` invocation
 /// when the script only contains word-only commands joined by safe operators.
 pub fn parse_bash_lc_plain_commands(command: &[String]) -> Option<Vec<Vec<String>>> {
-    let [bash, flag, script] = command else {
+    let [shell, flag, script] = command else {
         return None;
     };
 
-    if bash != "bash" || flag != "-lc" {
+    if !(shell == "bash" || shell == "zsh") || flag != "-lc" {
         return None;
     }
 
@@ -156,6 +156,13 @@ mod tests {
     fn parse_seq(src: &str) -> Option<Vec<Vec<String>>> {
         let tree = try_parse_bash(src)?;
         try_parse_word_only_commands_sequence(&tree, src)
+    }
+
+    #[test]
+    fn parse_bash_lc_plain_commands_accepts_zsh_invocation() {
+        let cmd = vec!["zsh".to_string(), "-lc".to_string(), "ls".to_string()];
+        let parsed = super::parse_bash_lc_plain_commands(&cmd).unwrap();
+        assert_eq!(parsed, vec![vec!["ls".to_string()]]);
     }
 
     #[test]

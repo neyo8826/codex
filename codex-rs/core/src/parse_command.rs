@@ -1,6 +1,7 @@
 use crate::bash::try_parse_bash;
 use crate::bash::try_parse_word_only_commands_sequence;
-use crate::powershell_utils::{parse_cmd_exe_commands, parse_powershell_commands};
+use crate::powershell_utils::parse_cmd_exe_commands;
+use crate::powershell_utils::parse_powershell_commands;
 use codex_protocol::parse_command::ParsedCommand;
 use shlex::split as shlex_split;
 use shlex::try_join as shlex_try_join;
@@ -131,6 +132,14 @@ mod tests {
             }],
         );
         Ok(())
+    }
+
+    #[test]
+    fn zsh_lc_matches_bash_parsing() {
+        let inner = "rg -n \"navigate-to-route\" -S";
+        let bash_args = vec_str(&["bash", "-lc", inner]);
+        let zsh_args = vec_str(&["zsh", "-lc", inner]);
+        assert_eq!(parse_command(&zsh_args), parse_command(&bash_args));
     }
 
     #[test]
@@ -1408,9 +1417,10 @@ fn normalize_tokens(cmd: &[String]) -> Vec<String> {
             // Do not re-shlex already-tokenized input; just drop the prefix.
             rest.to_vec()
         }
-        [bash, flag, script] if bash == "bash" && (flag == "-c" || flag == "-lc") => {
-            shlex_split(script)
-                .unwrap_or_else(|| vec!["bash".to_string(), flag.clone(), script.clone()])
+        [shell, flag, script]
+            if (shell == "bash" || shell == "zsh") && (flag == "-c" || flag == "-lc") =>
+        {
+            shlex_split(script).unwrap_or_else(|| vec![shell.clone(), flag.clone(), script.clone()])
         }
         _ => cmd.to_vec(),
     }

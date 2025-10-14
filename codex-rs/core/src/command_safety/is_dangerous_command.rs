@@ -58,6 +58,15 @@ mod tests {
     }
 
     #[test]
+    fn zsh_git_reset_is_dangerous() {
+        assert!(command_might_be_dangerous(&vec_str(&[
+            "zsh",
+            "-lc",
+            "git reset --hard"
+        ])));
+    }
+
+    #[test]
     fn git_status_is_not_dangerous() {
         assert!(!command_might_be_dangerous(&vec_str(&["git", "status"])));
     }
@@ -66,6 +75,15 @@ mod tests {
     fn bash_git_status_is_not_dangerous() {
         assert!(!command_might_be_dangerous(&vec_str(&[
             "bash",
+            "-lc",
+            "git status"
+        ])));
+    }
+
+    #[test]
+    fn zsh_git_status_is_not_dangerous() {
+        assert!(!command_might_be_dangerous(&vec_str(&[
+            "zsh",
             "-lc",
             "git status"
         ])));

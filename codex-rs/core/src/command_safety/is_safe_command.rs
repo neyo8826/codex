@@ -1,8 +1,7 @@
 use crate::bash::parse_bash_lc_plain_commands;
-use crate::powershell_utils::{
-    is_powershell_read_only_script, parse_powershell_commands,
-    try_extract_powershell_command_script,
-};
+use crate::powershell_utils::is_powershell_read_only_script;
+use crate::powershell_utils::parse_powershell_commands;
+use crate::powershell_utils::try_extract_powershell_command_script;
 use codex_protocol::parse_command::ParsedCommand;
 use shlex::split as shlex_split;
 
@@ -37,8 +36,8 @@ pub fn is_known_safe_command(command: &[String]) -> bool {
     // Fallback for bash -lc: allow a conservative read-only subset with
     // simple variable assignments and $(...) substitutions, combined with
     // pipes/&&/||/; between known-safe commands.
-    if let [bash, flag, script] = command
-        && bash == "bash"
+    if let [shell, flag, script] = command
+        && (shell == "bash" || shell == "zsh")
         && flag == "-lc"
         && is_bash_read_only_with_assignments(script)
     {
@@ -381,6 +380,154 @@ fn sed_flags_whitelisted(command: &[String]) -> bool {
     saw_expression
 }
 
+// ---- helpers for bash -lc fallback ----
+
+fn is_bash_read_only_with_assignments(script: &str) -> bool {
+    // Validate each $(...) substitution is itself a safe command.
+    let mut s = script.to_string();
+    loop {
+        let Some(start) = s.find("$(") else { break };
+        // find matching ')'
+        let mut depth = 1i32;
+        let mut i = start + 2;
+        let bytes = s.as_bytes();
+        let mut end_opt = None;
+        while i < s.len() {
+            let c = bytes[i] as char;
+            if c == '(' {
+                depth += 1;
+            } else if c == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    end_opt = Some(i);
+                    break;
+                }
+            }
+            i += 1;
+        }
+        let Some(end) = end_opt else { return false };
+        let inner = s[start + 2..end].trim();
+        let inner_tokens = shlex_split(inner)
+            .unwrap_or_else(|| inner.split_whitespace().map(ToString::to_string).collect());
+        if inner_tokens.is_empty() || !is_safe_to_call_with_exec(&inner_tokens) {
+            return false;
+        }
+        // Replace the whole $(...) with a placeholder to avoid false positives when scanning
+        s.replace_range(start..=end, "SUBST");
+    }
+
+    // Quick reject of redirections, backticks, and grouping.
+    if s.contains('`') || s.contains('<') || s.contains('>') || s.contains('{') || s.contains('}') {
+        return false;
+    }
+    // Reject standalone '&' (background). Allow '&&'.
+    if s.replace("&&", "").contains('&') {
+        return false;
+    }
+
+    // Split into segments by |, &&, ||, ; while respecting basic quotes.
+    let segments = split_on_shell_operators(&s);
+    if segments.is_empty() {
+        return false;
+    }
+    for seg in segments {
+        let trimmed = seg.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Allow pure variable assignment like: foo=BAR
+        if is_pure_assignment(trimmed) {
+            continue;
+        }
+        // Disallow assignment-prefix before a command (e.g., FOO=bar ls) for now.
+        if has_assignment_prefix(trimmed) {
+            return false;
+        }
+        let tokens = shlex_split(trimmed).unwrap_or_else(|| {
+            trimmed
+                .split_whitespace()
+                .map(ToString::to_string)
+                .collect()
+        });
+        if tokens.is_empty() || !is_safe_to_call_with_exec(&tokens) {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_pure_assignment(s: &str) -> bool {
+    // NAME=VALUE with NAME=[A-Za-z_][A-Za-z0-9_]*
+    let Some(eq) = s.find('=') else { return false };
+    if s[..eq].chars().enumerate().all(|(i, c)| {
+        if i == 0 {
+            c.is_ascii_alphabetic() || c == '_'
+        } else {
+            c.is_ascii_alphanumeric() || c == '_'
+        }
+    }) && !s[..eq].is_empty()
+    {
+        // Ensure there are no spaces; treat it as a standalone assignment.
+        !s[..eq].contains(' ') && !s[eq + 1..].is_empty() && !s.contains(' ')
+    } else {
+        false
+    }
+}
+
+fn has_assignment_prefix(s: &str) -> bool {
+    // Detect patterns like NAME=value <rest>
+    if let Some(space) = s.find(' ') {
+        let head = &s[..space];
+        is_pure_assignment(head)
+    } else {
+        false
+    }
+}
+
+fn split_on_shell_operators(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut buf = String::new();
+    let mut chars = s.chars().peekable();
+    let mut in_single = false;
+    let mut in_double = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                buf.push(c);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                buf.push(c);
+            }
+            '|' if !in_single && !in_double => {
+                parts.push(buf.trim().to_string());
+                buf.clear();
+            }
+            '&' if !in_single && !in_double => {
+                if matches!(chars.peek(), Some('&')) {
+                    // consume second '&'
+                    let _ = chars.next();
+                    parts.push(buf.trim().to_string());
+                    buf.clear();
+                } else {
+                    // standalone '&' not allowed
+                    return Vec::new();
+                }
+            }
+            ';' if !in_single && !in_double => {
+                parts.push(buf.trim().to_string());
+                buf.clear();
+            }
+            c2 => buf.push(c2),
+        }
+    }
+    if !buf.trim().is_empty() {
+        parts.push(buf.trim().to_string());
+    }
+    parts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,6 +687,16 @@ mod tests {
     }
 
     #[test]
+    fn zsh_lc_safe_examples() {
+        assert!(is_known_safe_command(&vec_str(&["zsh", "-lc", "ls"])));
+        assert!(is_known_safe_command(&vec_str(&[
+            "zsh",
+            "-lc",
+            "ls && pwd"
+        ])));
+    }
+
+    #[test]
     fn bash_lc_safe_examples_with_operators() {
         assert!(is_known_safe_command(&vec_str(&[
             "bash",
@@ -608,6 +765,18 @@ mod tests {
         // Disallowed redirection.
         assert!(
             !is_known_safe_command(&vec_str(&["bash", "-lc", "ls > out.txt"])),
+            "> redirection should be rejected"
+        );
+    }
+
+    #[test]
+    fn zsh_lc_unsafe_examples() {
+        assert!(
+            !is_known_safe_command(&vec_str(&["zsh", "-lc", "ls && rm -rf /"])),
+            "Sequence containing unsafe command must be rejected"
+        );
+        assert!(
+            !is_known_safe_command(&vec_str(&["zsh", "-lc", "ls > out.txt"])),
             "> redirection should be rejected"
         );
     }
@@ -925,152 +1094,4 @@ mod tests {
             "bazel", "vendor", "//..."
         ])));
     }
-}
-
-// ---- helpers for bash -lc fallback ----
-
-fn is_bash_read_only_with_assignments(script: &str) -> bool {
-    // Validate each $(...) substitution is itself a safe command.
-    let mut s = script.to_string();
-    loop {
-        let Some(start) = s.find("$(") else { break };
-        // find matching ')'
-        let mut depth = 1i32;
-        let mut i = start + 2;
-        let bytes = s.as_bytes();
-        let mut end_opt = None;
-        while i < s.len() {
-            let c = bytes[i] as char;
-            if c == '(' {
-                depth += 1;
-            } else if c == ')' {
-                depth -= 1;
-                if depth == 0 {
-                    end_opt = Some(i);
-                    break;
-                }
-            }
-            i += 1;
-        }
-        let Some(end) = end_opt else { return false };
-        let inner = s[start + 2..end].trim();
-        let inner_tokens = shlex_split(inner)
-            .unwrap_or_else(|| inner.split_whitespace().map(ToString::to_string).collect());
-        if inner_tokens.is_empty() || !is_safe_to_call_with_exec(&inner_tokens) {
-            return false;
-        }
-        // Replace the whole $(...) with a placeholder to avoid false positives when scanning
-        s.replace_range(start..=end, "SUBST");
-    }
-
-    // Quick reject of redirections, backticks, and grouping.
-    if s.contains('`') || s.contains('<') || s.contains('>') || s.contains('{') || s.contains('}') {
-        return false;
-    }
-    // Reject standalone '&' (background). Allow '&&'.
-    if s.replace("&&", "").contains('&') {
-        return false;
-    }
-
-    // Split into segments by |, &&, ||, ; while respecting basic quotes.
-    let segments = split_on_shell_operators(&s);
-    if segments.is_empty() {
-        return false;
-    }
-    for seg in segments {
-        let trimmed = seg.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        // Allow pure variable assignment like: foo=BAR
-        if is_pure_assignment(trimmed) {
-            continue;
-        }
-        // Disallow assignment-prefix before a command (e.g., FOO=bar ls) for now.
-        if has_assignment_prefix(trimmed) {
-            return false;
-        }
-        let tokens = shlex_split(trimmed).unwrap_or_else(|| {
-            trimmed
-                .split_whitespace()
-                .map(ToString::to_string)
-                .collect()
-        });
-        if tokens.is_empty() || !is_safe_to_call_with_exec(&tokens) {
-            return false;
-        }
-    }
-    true
-}
-
-fn is_pure_assignment(s: &str) -> bool {
-    // NAME=VALUE with NAME=[A-Za-z_][A-Za-z0-9_]*
-    let Some(eq) = s.find('=') else { return false };
-    if s[..eq].chars().enumerate().all(|(i, c)| {
-        if i == 0 {
-            c.is_ascii_alphabetic() || c == '_'
-        } else {
-            c.is_ascii_alphanumeric() || c == '_'
-        }
-    }) && !s[..eq].is_empty()
-    {
-        // Ensure there are no spaces; treat it as a standalone assignment.
-        !s[..eq].contains(' ') && !s[eq + 1..].is_empty() && !s.contains(' ')
-    } else {
-        false
-    }
-}
-
-fn has_assignment_prefix(s: &str) -> bool {
-    // Detect patterns like NAME=value <rest>
-    if let Some(space) = s.find(' ') {
-        let head = &s[..space];
-        is_pure_assignment(head)
-    } else {
-        false
-    }
-}
-
-fn split_on_shell_operators(s: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut buf = String::new();
-    let mut chars = s.chars().peekable();
-    let mut in_single = false;
-    let mut in_double = false;
-    while let Some(c) = chars.next() {
-        match c {
-            '\'' if !in_double => {
-                in_single = !in_single;
-                buf.push(c);
-            }
-            '"' if !in_single => {
-                in_double = !in_double;
-                buf.push(c);
-            }
-            '|' if !in_single && !in_double => {
-                parts.push(buf.trim().to_string());
-                buf.clear();
-            }
-            '&' if !in_single && !in_double => {
-                if matches!(chars.peek(), Some('&')) {
-                    // consume second '&'
-                    let _ = chars.next();
-                    parts.push(buf.trim().to_string());
-                    buf.clear();
-                } else {
-                    // standalone '&' not allowed
-                    return Vec::new();
-                }
-            }
-            ';' if !in_single && !in_double => {
-                parts.push(buf.trim().to_string());
-                buf.clear();
-            }
-            c2 => buf.push(c2),
-        }
-    }
-    if !buf.trim().is_empty() {
-        parts.push(buf.trim().to_string());
-    }
-    parts
 }
