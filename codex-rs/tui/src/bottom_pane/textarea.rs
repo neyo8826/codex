@@ -1,3 +1,4 @@
+use super::is_alt_gr_modifier;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
@@ -241,6 +242,11 @@ impl TextArea {
             } if modifiers == (KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                 self.delete_backward_word()
             },
+            KeyEvent {
+                code: KeyCode::Char(c),
+                modifiers,
+                ..
+            } if is_alt_gr_modifier(modifiers) => self.insert_str(&c.to_string()),
             KeyEvent {
                 code: KeyCode::Backspace,
                 modifiers: KeyModifiers::ALT,
