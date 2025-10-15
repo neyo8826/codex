@@ -26,6 +26,7 @@ use super::footer::footer_height;
 use super::footer::render_footer;
 use super::footer::reset_mode_after_activity;
 use super::footer::toggle_shortcut_mode;
+use super::is_alt_gr_modifier;
 use super::paste_burst::CharDecision;
 use super::paste_burst::PasteBurst;
 use crate::bottom_pane::paste_burst::FlushResult;
@@ -1094,7 +1095,8 @@ impl ChatComposer {
         {
             let has_ctrl_or_alt =
                 modifiers.contains(KeyModifiers::CONTROL) || modifiers.contains(KeyModifiers::ALT);
-            if !has_ctrl_or_alt {
+            let is_alt_gr = is_alt_gr_modifier(modifiers);
+            if !has_ctrl_or_alt || is_alt_gr {
                 // Non-ASCII characters (e.g., from IMEs) can arrive in quick bursts and be
                 // misclassified by paste heuristics. Flush any active burst buffer and insert
                 // non-ASCII characters directly.
