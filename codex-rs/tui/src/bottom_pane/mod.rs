@@ -36,10 +36,15 @@ mod selection_popup_common;
 mod textarea;
 pub(crate) use feedback_view::FeedbackView;
 
+#[cfg(windows)]
 pub(crate) fn is_alt_gr_modifier(modifiers: KeyModifiers) -> bool {
     modifiers.contains(KeyModifiers::CONTROL)
         && modifiers.contains(KeyModifiers::ALT)
         && !modifiers.intersects(KeyModifiers::SUPER | KeyModifiers::HYPER | KeyModifiers::META)
+}
+#[cfg(not(windows))]
+pub(crate) fn is_alt_gr_modifier(_modifiers: KeyModifiers) -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

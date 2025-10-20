@@ -1138,7 +1138,8 @@ impl ChatComposer {
                         return (InputResult::None, true);
                     }
                 }
-            } else if let Some(pasted) = self.paste_burst.flush_before_modified_input() {
+            }
+            if let Some(pasted) = self.paste_burst.flush_before_modified_input() {
                 self.handle_paste(pasted);
             }
         }
