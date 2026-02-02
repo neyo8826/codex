@@ -6,7 +6,11 @@ CFLAGS_x86_64_pc_windows_gnullvm = "-DCURL_ENABLE_NTLM"
 CFLAGS_x86_64_pc_windows_msvc = "-DCURL_ENABLE_NTLM"
 
 [target.'cfg(all(windows, target_env = "msvc"))']
-rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "target-feature=+crt-static"]
+rustflags = [
+    "-C", "link-arg=/STACK:8388608",
+    "-C", "target-feature=+crt-static",
+    "-C", "link-arg=/OPT:REF,ICF",
+]
 
 # MSVC emits a warning about code that may trip "Cortex-A53 MPCore processor bug #843419" (see
 # https://developer.arm.com/documentation/epm048406/latest) which is sometimes emitted by LLVM.
@@ -16,3 +20,10 @@ rustflags = ["-C", "link-arg=/STACK:8388608", "-C", "link-arg=/arm64hazardfree"]
 
 [target.'cfg(all(windows, target_env = "gnu"))']
 rustflags = ["-C", "link-arg=-Wl,--stack,8388608"]
+
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))']
+linker = "clang"
+rustflags = [
+    "-C", "link-arg=-fuse-ld=lld",
+    "-C", "link-arg=-Wl,--icf=safe",
+]
