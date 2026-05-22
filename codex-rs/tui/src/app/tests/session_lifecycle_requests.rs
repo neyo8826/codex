@@ -4690,6 +4690,8 @@ model_reasoning_effort = "low"
         /*session_start_source*/ None,
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
+        /*model_override*/ None,
+        /*reasoning_effort_override*/ None,
     )
     .await;
     assert_eq!(
@@ -5054,6 +5056,8 @@ terminal_visualization_instructions = true
         /*session_start_source*/ None,
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
+        /*model_override*/ None,
+        /*reasoning_effort_override*/ None,
     )
     .await;
     let unsaved = app.chat_widget.thread_id().expect("unsaved thread");
@@ -5227,7 +5231,7 @@ async fn change_directory_scenario() -> Result<()> {
     let (rec, plain, req) = (recorded_params, crate::key_hint::plain, &requests);
     let mut tui = crate::tui::test_support::make_test_tui()?;
     let (source, message, name) = (None, None, Some("Previous project".to_string()));
-    app.start_fresh_session(&mut tui, &mut server, source, message, name)
+    app.start_fresh_session(&mut tui, &mut server, source, message, name, None, None)
         .await;
     let original = app.chat_widget.thread_id().expect("original thread");
     let rollout = app.chat_widget.rollout_path().expect("original rollout");
@@ -5638,6 +5642,8 @@ fn fresh_session_keeps_its_name_and_draft_when_cycling_backends() -> Result<()> 
                     /*session_start_source*/ None,
                     /*initial_user_message*/ None,
                     /*new_thread_name*/ Some("Add User".to_string()),
+                    /*model_override*/ None,
+                    /*reasoning_effort_override*/ None,
                 )
                 .await;
 
@@ -5944,6 +5950,8 @@ fn session_lifecycle_avoids_redundant_subagent_metadata_reads() -> Result<()> {
                     /*session_start_source*/ None,
                     /*initial_user_message*/ None,
                     /*new_thread_name*/ None,
+                    /*model_override*/ None,
+                    /*reasoning_effort_override*/ None,
                 )
                 .await;
 

@@ -1212,6 +1212,8 @@ impl App {
         session_start_source: Option<ThreadStartSource>,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
         new_thread_name: Option<String>,
+        model_override: Option<String>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
     ) {
         if self.reject_pending_permission_root_switch() {
             if let Some(message) = initial_user_message {
@@ -1244,7 +1246,12 @@ impl App {
         // history. If an initial message is provided, `enqueue_primary_thread_session` suppresses it
         // until the new session is configured and any replayed turns have been rendered.
         match self
-            .prepare_fresh_session(app_server, session_start_source)
+            .prepare_fresh_session(
+                app_server,
+                session_start_source,
+                model_override.as_deref(),
+                reasoning_effort_override,
+            )
             .await
         {
             Ok(prepared) => {
@@ -1272,13 +1279,20 @@ impl App {
         &mut self,
         app_server: &mut AppServerSession,
         session_start_source: Option<ThreadStartSource>,
+        model_override: Option<&str>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
     ) -> Result<PreparedFreshSession> {
-        let (config, local_settings) =
+        let (mut config, local_settings) =
             crate::boxed_future!(self.load_new_session_config(app_server))
                 .await
                 .map_err(|err| {
                     color_eyre::eyre::eyre!("Failed to read new session defaults: {err}")
                 })?;
+        Self::apply_fresh_session_overrides(
+            &mut config,
+            model_override,
+            reasoning_effort_override,
+        );
         let started = crate::boxed_future!(app_server.start_thread_with_session_start_source(
             &self.local_settings,
             &config,
@@ -1303,12 +1317,19 @@ impl App {
         tui: &mut tui::Tui,
         app_server: &mut AppServerSession,
         plan: String,
+        model_override: Option<String>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
     ) -> Result<()> {
         if self.reject_pending_permission_root_switch() {
             return Ok(());
         }
         let prepared = match self
-            .prepare_fresh_session(app_server, Some(ThreadStartSource::Clear))
+            .prepare_fresh_session(
+                app_server,
+                Some(ThreadStartSource::Clear),
+                model_override.as_deref(),
+                reasoning_effort_override,
+            )
             .await
         {
             Ok(prepared) => prepared,
@@ -1680,6 +1701,40 @@ impl App {
         }
         self.agent_navigation
             .adjacent_thread_id(self.current_displayed_thread_id(), direction)
+    }
+
+    pub(super) fn fresh_session_config(&self) -> Config {
+        let mut config = self.config.clone();
+        config.service_tier = self.chat_widget.configured_service_tier();
+        config
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn fresh_session_config_with_overrides(
+        &self,
+        model_override: Option<&str>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
+    ) -> Config {
+        let mut config = self.fresh_session_config();
+        Self::apply_fresh_session_overrides(
+            &mut config,
+            model_override,
+            reasoning_effort_override,
+        );
+        config
+    }
+
+    fn apply_fresh_session_overrides(
+        config: &mut Config,
+        model_override: Option<&str>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
+    ) {
+        if let Some(model_override) = model_override {
+            config.model = Some(model_override.to_string());
+        }
+        if let Some(reasoning_effort_override) = reasoning_effort_override {
+            config.model_reasoning_effort = Some(reasoning_effort_override);
+        }
     }
 
     pub(super) async fn resume_target_session(

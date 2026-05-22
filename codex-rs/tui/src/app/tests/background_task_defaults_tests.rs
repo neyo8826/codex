@@ -915,6 +915,8 @@ async fn command_center_new_restores_blank_drafts_and_builtin_permissions() -> R
         /*session_start_source*/ None,
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
+        /*model_override*/ None,
+        /*reasoning_effort_override*/ None,
     )
     .await;
     let first = app.chat_widget.thread_id().unwrap();

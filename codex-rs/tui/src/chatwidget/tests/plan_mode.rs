@@ -135,13 +135,141 @@ async fn plan_implementation_popup_clear_context_emits_clear_submit_event() {
     chat.open_plan_implementation_prompt();
 
     chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
     chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
 
     let event = rx.try_recv().expect("expected AppEvent");
-    let AppEvent::ImplementPlanInFreshSession { plan } = event else {
+    let AppEvent::ImplementPlanInFreshSession {
+        plan,
+        model_override,
+        reasoning_effort_override,
+    } = event
+    else {
         panic!("expected ImplementPlanInFreshSession, got {event:?}");
     };
     assert_eq!(plan, plan_markdown);
+    assert_eq!(model_override, None);
+    assert_eq!(reasoning_effort_override, None);
+}
+
+#[tokio::test]
+async fn plan_implementation_popup_choose_model_opens_model_picker_event() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    chat.open_plan_implementation_prompt();
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected AppEvent");
+    assert_matches!(
+        event,
+        AppEvent::OpenPlanImplementationModelPicker {
+            target: PlanImplementationSubmitTarget::CurrentThread,
+        }
+    );
+}
+
+#[tokio::test]
+async fn plan_implementation_model_picker_current_thread_submits_with_selected_model_and_effort() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    let selected_model = chat.current_model().to_string();
+    chat.open_plan_implementation_model_picker(PlanImplementationSubmitTarget::CurrentThread);
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(popup.contains("Choose implementation model"));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected AppEvent");
+    assert_matches!(
+        event,
+        AppEvent::OpenPlanImplementationReasoningPicker { target, model }
+            if target == PlanImplementationSubmitTarget::CurrentThread
+                && model == selected_model
+    );
+
+    let preset = get_available_model(&chat, selected_model.as_str());
+    chat.open_plan_implementation_reasoning_picker(
+        PlanImplementationSubmitTarget::CurrentThread,
+        selected_model.clone(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected AppEvent");
+    let AppEvent::SubmitUserMessageWithMode {
+        text,
+        collaboration_mode,
+    } = event
+    else {
+        panic!("expected SubmitUserMessageWithMode, got {event:?}");
+    };
+    assert_eq!(
+        text,
+        plan_implementation::PLAN_IMPLEMENTATION_CODING_MESSAGE
+    );
+    assert_eq!(collaboration_mode.mode, Some(ModeKind::Default));
+    assert_eq!(
+        collaboration_mode.model.as_deref(),
+        Some(selected_model.as_str())
+    );
+    assert_eq!(
+        collaboration_mode.reasoning_effort,
+        Some(Some(preset.default_reasoning_effort))
+    );
+}
+
+#[tokio::test]
+async fn plan_implementation_model_picker_fresh_thread_submits_clear_context_with_model_and_effort_override()
+ {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5")).await;
+    let selected_model = chat.current_model().to_string();
+    let preset = get_available_model(&chat, selected_model.as_str());
+    let plan_markdown = "- Step 1\n- Step 2\n";
+    chat.on_plan_item_completed(plan_markdown.to_string());
+    let _ = drain_insert_history(&mut rx);
+    chat.open_plan_implementation_prompt();
+
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Down));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected AppEvent");
+    assert_matches!(
+        event,
+        AppEvent::OpenPlanImplementationModelPicker {
+            target: PlanImplementationSubmitTarget::FreshThread,
+        }
+    );
+
+    let event = rx.try_recv().expect("expected AppEvent");
+    assert_matches!(
+        event,
+        AppEvent::OpenPlanImplementationReasoningPicker { target, model }
+            if target == PlanImplementationSubmitTarget::FreshThread
+                && model == selected_model
+    );
+
+    chat.open_plan_implementation_reasoning_picker(
+        PlanImplementationSubmitTarget::FreshThread,
+        selected_model.clone(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let event = rx.try_recv().expect("expected AppEvent");
+    let AppEvent::ImplementPlanInFreshSession {
+        plan,
+        model_override,
+        reasoning_effort_override,
+    } = event
+    else {
+        panic!("expected ImplementPlanInFreshSession, got {event:?}");
+    };
+    assert_eq!(plan, plan_markdown);
+    assert_eq!(model_override, Some(selected_model));
+    assert_eq!(
+        reasoning_effort_override,
+        Some(preset.default_reasoning_effort)
+    );
 }
 
 #[tokio::test]
@@ -156,7 +284,11 @@ async fn plan_implementation_clear_context_requires_default_mode_and_plan() {
         /*clear_context_usage_label*/ None,
     );
     assert_eq!(
-        params.items[1].disabled_reason.as_deref(),
+        params.items[2].disabled_reason.as_deref(),
+        Some(plan_implementation::PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE)
+    );
+    assert_eq!(
+        params.items[3].disabled_reason.as_deref(),
         Some(plan_implementation::PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE)
     );
 
@@ -166,7 +298,11 @@ async fn plan_implementation_clear_context_requires_default_mode_and_plan() {
         /*clear_context_usage_label*/ None,
     );
     assert_eq!(
-        params.items[1].disabled_reason.as_deref(),
+        params.items[2].disabled_reason.as_deref(),
+        Some(plan_implementation::PLAN_IMPLEMENTATION_NO_APPROVED_PLAN)
+    );
+    assert_eq!(
+        params.items[3].disabled_reason.as_deref(),
         Some(plan_implementation::PLAN_IMPLEMENTATION_NO_APPROVED_PLAN)
     );
 
@@ -176,7 +312,11 @@ async fn plan_implementation_clear_context_requires_default_mode_and_plan() {
         /*clear_context_usage_label*/ None,
     );
     assert_eq!(
-        params.items[1].disabled_reason.as_deref(),
+        params.items[2].disabled_reason.as_deref(),
+        Some(plan_implementation::PLAN_IMPLEMENTATION_NO_APPROVED_PLAN)
+    );
+    assert_eq!(
+        params.items[3].disabled_reason.as_deref(),
         Some(plan_implementation::PLAN_IMPLEMENTATION_NO_APPROVED_PLAN)
     );
 
@@ -185,11 +325,13 @@ async fn plan_implementation_clear_context_requires_default_mode_and_plan() {
         Some("- Step\n"),
         /*clear_context_usage_label*/ None,
     );
-    assert_eq!(params.items[1].disabled_reason, None);
-    assert!(!params.items[1].actions.is_empty());
+    assert_eq!(params.items[2].disabled_reason, None);
+    assert!(!params.items[2].actions.is_empty());
+    assert_eq!(params.items[3].disabled_reason, None);
+    assert!(!params.items[3].actions.is_empty());
 
     assert_eq!(
-        params.items[1].description.as_deref(),
+        params.items[2].description.as_deref(),
         Some("Fresh thread with this plan")
     );
 
@@ -199,7 +341,7 @@ async fn plan_implementation_clear_context_requires_default_mode_and_plan() {
         Some("89% used"),
     );
     assert_eq!(
-        params.items[1].description.as_deref(),
+        params.items[2].description.as_deref(),
         Some("Start a fresh thread (current context: 89% used)")
     );
 }

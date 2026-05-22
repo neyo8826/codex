@@ -185,6 +185,8 @@ async fn new_sessions_preserve_yolo_launch_and_later_permission_choices() -> Res
             /*session_start_source*/ None,
             /*initial_user_message*/ None,
             /*new_thread_name*/ None,
+            /*model_override*/ None,
+            /*reasoning_effort_override*/ None,
         )
         .await;
         let cached = app.primary_session_configured.as_ref().unwrap().clone();
@@ -246,6 +248,8 @@ async fn new_session_preserves_vim_line_yank() -> Result<()> {
         /*session_start_source*/ None,
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
+        /*model_override*/ None,
+        /*reasoning_effort_override*/ None,
     )
     .await;
 
@@ -461,6 +465,8 @@ async fn replacement_uses_server_defaults_and_preserves_explicit_launch_settings
             /*session_start_source*/ None,
             /*initial_user_message*/ None,
             /*new_thread_name*/ None,
+            /*model_override*/ None,
+            /*reasoning_effort_override*/ None,
         )
         .await;
         let starts = recorded_params(&requests, "thread/start");
@@ -761,6 +767,8 @@ async fn replacement_failure_keeps_current_task_and_restores_input() -> Result<(
             /*session_start_source*/ None,
             Some("keep this request".into()),
             /*new_thread_name*/ None,
+            /*model_override*/ None,
+            /*reasoning_effort_override*/ None,
         )
         .await;
         assert_eq!(app.chat_widget.thread_id(), Some(current));
@@ -1028,6 +1036,8 @@ async fn replacement_preserves_remote_launch_paths_and_older_servers() -> Result
             /*session_start_source*/ None,
             /*initial_user_message*/ None,
             /*new_thread_name*/ None,
+            /*model_override*/ None,
+            /*reasoning_effort_override*/ None,
         )
         .await;
         assert_eq!(

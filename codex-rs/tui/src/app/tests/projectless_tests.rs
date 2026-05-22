@@ -55,6 +55,8 @@ sandbox = "unelevated"
         /*session_start_source*/ None,
         /*initial_user_message*/ None,
         /*new_thread_name*/ None,
+        /*model_override*/ None,
+        /*reasoning_effort_override*/ None,
     )
     .await;
     assert!(
