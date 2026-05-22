@@ -808,7 +808,11 @@ async fn plan_implementation_reads_approved_plan_file_in_fresh_session() -> Resu
     Box::pin(app.handle_event(
         &mut tui,
         &mut server,
-        AppEvent::ImplementPlanInFreshSession { plan: plan.clone() },
+        AppEvent::ImplementPlanInFreshSession {
+            plan: plan.clone(),
+            model_override: None,
+            reasoning_effort_override: None,
+        },
     ))
     .await?;
     let thread_id = app.chat_widget.thread_id().expect("fresh thread");
@@ -1007,7 +1011,11 @@ async fn assert_plan_implementation_with_unavailable_attachment(
     crate::boxed_future!(app.handle_event(
         &mut tui,
         &mut server,
-        AppEvent::ImplementPlanInFreshSession { plan: plan.clone() },
+        AppEvent::ImplementPlanInFreshSession {
+            plan: plan.clone(),
+            model_override: None,
+            reasoning_effort_override: None,
+        },
     ))
     .await?;
 

@@ -623,8 +623,19 @@ impl App {
             AppEvent::RawOutputModeChanged { enabled } => {
                 self.apply_raw_output_mode(tui, enabled, /*notify*/ false);
             }
-            AppEvent::ImplementPlanInFreshSession { plan } => {
-                crate::boxed_future!(self.implement_plan_in_fresh_session(tui, app_server, plan)).await?;
+            AppEvent::ImplementPlanInFreshSession {
+                plan,
+                model_override,
+                reasoning_effort_override,
+            } => {
+                crate::boxed_future!(self.implement_plan_in_fresh_session(
+                    tui,
+                    app_server,
+                    plan,
+                    model_override,
+                    reasoning_effort_override,
+                ))
+                .await?;
             }
             AppEvent::OpenResumePicker => {
                 self.pending_open_resume_picker = true;
@@ -2843,6 +2854,14 @@ impl App {
                     self.chat_widget
                         .open_plan_reasoning_scope_prompt(model, effort);
                 }
+            }
+            AppEvent::OpenPlanImplementationModelPicker { target } => {
+                self.chat_widget
+                    .open_plan_implementation_model_picker(target);
+            }
+            AppEvent::OpenPlanImplementationReasoningPicker { target, model } => {
+                self.chat_widget
+                    .open_plan_implementation_reasoning_picker(target, model);
             }
             AppEvent::OpenAllModelsPopup => {
                 self.chat_widget.open_all_models_popup();
