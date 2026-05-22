@@ -219,6 +219,12 @@ pub(crate) struct AgentsOverviewThreadRefresh {
     pub(crate) recent_seed_complete: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanImplementationSubmitTarget {
+    CurrentThread,
+    FreshThread,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, IntoStaticStr)]
 pub(crate) enum AppEvent {
@@ -417,6 +423,8 @@ pub(crate) enum AppEvent {
     /// sees only the explicit prompt carried in `text` once the new session is configured.
     ClearUiAndSubmitUserMessage {
         text: String,
+        model_override: Option<String>,
+        reasoning_effort_override: Option<ReasoningEffort>,
     },
 
     /// Open the resume picker inside the running TUI session.
@@ -1021,6 +1029,17 @@ pub(crate) enum AppEvent {
     OpenPlanReasoningScopePrompt {
         model: String,
         effort: Option<ReasoningEffort>,
+    },
+
+    /// Open a model picker used specifically for Plan-mode implementation handoff.
+    OpenPlanImplementationModelPicker {
+        target: PlanImplementationSubmitTarget,
+    },
+
+    /// Open the thinking-effort picker for a selected implementation model.
+    OpenPlanImplementationReasoningPicker {
+        target: PlanImplementationSubmitTarget,
+        model: String,
     },
 
     /// Open the full model picker (non-auto models).
