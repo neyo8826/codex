@@ -30,6 +30,238 @@ impl ChatWidget {
         self.open_model_popup_with_presets(presets);
     }
 
+    pub(crate) fn open_plan_implementation_model_picker(
+        &mut self,
+        target: PlanImplementationSubmitTarget,
+    ) {
+        let presets: Vec<ModelPreset> = match self.model_catalog.try_list_models() {
+            Ok(models) => models
+                .into_iter()
+                .filter(|preset| preset.show_in_picker)
+                .collect(),
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; please try again in a moment.".to_string(),
+                    /*hint*/ None,
+                );
+                return;
+            }
+        };
+
+        if presets.is_empty() {
+            self.add_info_message(
+                "No models are available to implement this plan right now.".to_string(),
+                /*hint*/ None,
+            );
+            return;
+        }
+
+        let mut items = Vec::with_capacity(presets.len());
+        for preset in presets {
+            let model = preset.model.clone();
+            let model_for_action = model.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenPlanImplementationReasoningPicker {
+                    target,
+                    model: model_for_action.clone(),
+                });
+            })];
+
+            items.push(SelectionItem {
+                name: model.clone(),
+                description: (!preset.description.is_empty()).then_some(preset.description),
+                is_current: model == self.current_model(),
+                is_default: preset.is_default,
+                search_value: Some(model),
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        let (title, subtitle) = match target {
+            PlanImplementationSubmitTarget::CurrentThread => (
+                "Choose implementation model",
+                "Switch to Default mode, then choose thinking effort.",
+            ),
+            PlanImplementationSubmitTarget::FreshThread => (
+                "Choose implementation model",
+                "Start a fresh thread, then choose thinking effort.",
+            ),
+        };
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            header: self.model_menu_header(title, subtitle),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            is_searchable: true,
+            search_placeholder: Some("Type to search models".to_string()),
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn open_plan_implementation_reasoning_picker(
+        &mut self,
+        target: PlanImplementationSubmitTarget,
+        model: String,
+    ) {
+        let preset = match self.model_catalog.try_list_models() {
+            Ok(models) => models
+                .into_iter()
+                .find(|preset| preset.show_in_picker && preset.model == model),
+            Err(_) => {
+                self.add_info_message(
+                    "Models are being updated; please try again in a moment.".to_string(),
+                    /*hint*/ None,
+                );
+                return;
+            }
+        };
+        let Some(preset) = preset else {
+            self.add_info_message(
+                format!("Model `{model}` is no longer available for implementation."),
+                /*hint*/ None,
+            );
+            return;
+        };
+
+        #[derive(Clone)]
+        enum SubmitTarget {
+            CurrentThread { default_mask: CollaborationModeMask },
+            FreshThread { prompt: String },
+        }
+
+        let submit_target = match target {
+            PlanImplementationSubmitTarget::CurrentThread => {
+                let Some(default_mask) =
+                    collaboration_modes::default_mode_mask(self.model_catalog.as_ref())
+                else {
+                    self.add_info_message(
+                        format!(
+                            "{}; cannot continue with implementation handoff.",
+                            plan_implementation::PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE
+                        ),
+                        /*hint*/ None,
+                    );
+                    return;
+                };
+                SubmitTarget::CurrentThread { default_mask }
+            }
+            PlanImplementationSubmitTarget::FreshThread => {
+                let Some(prompt) = self
+                    .transcript
+                    .latest_proposed_plan_markdown
+                    .as_deref()
+                    .and_then(plan_implementation::clear_context_implementation_prompt)
+                else {
+                    self.add_info_message(
+                        format!(
+                            "{}; cannot continue with implementation handoff.",
+                            plan_implementation::PLAN_IMPLEMENTATION_NO_APPROVED_PLAN
+                        ),
+                        /*hint*/ None,
+                    );
+                    return;
+                };
+                SubmitTarget::FreshThread { prompt }
+            }
+        };
+
+        let default_effort = preset.default_reasoning_effort;
+        let mut choices: Vec<ReasoningEffortConfig> = preset
+            .supported_reasoning_efforts
+            .iter()
+            .map(|option| option.effort.clone())
+            .collect();
+        if choices.is_empty() {
+            choices.push(default_effort.clone());
+        }
+
+        fn plan_implementation_submit_event(
+            submit_target: &SubmitTarget,
+            model: &str,
+            effort: ReasoningEffortConfig,
+        ) -> AppEvent {
+            match submit_target {
+                SubmitTarget::CurrentThread { default_mask } => {
+                    let mut collaboration_mode = default_mask.clone();
+                    collaboration_mode.model = Some(model.to_string());
+                    collaboration_mode.reasoning_effort = Some(Some(effort));
+                    AppEvent::SubmitUserMessageWithMode {
+                        text: plan_implementation::PLAN_IMPLEMENTATION_CODING_MESSAGE.to_string(),
+                        collaboration_mode,
+                    }
+                }
+                SubmitTarget::FreshThread { prompt } => AppEvent::ClearUiAndSubmitUserMessage {
+                    text: prompt.clone(),
+                    model_override: Some(model.to_string()),
+                    reasoning_effort_override: Some(effort),
+                },
+            }
+        }
+
+        if choices.len() == 1 {
+            if let Some(effort) = choices.first().cloned() {
+                self.app_event_tx.send(plan_implementation_submit_event(
+                    &submit_target,
+                    model.as_str(),
+                    effort,
+                ));
+            }
+            return;
+        }
+
+        let current_effort = (model == self.current_model())
+            .then(|| self.current_reasoning_effort())
+            .flatten();
+        let initial_selected_idx = choices
+            .iter()
+            .position(|choice| Some(choice.clone()) == current_effort)
+            .or_else(|| choices.iter().position(|choice| *choice == default_effort));
+        let mut items: Vec<SelectionItem> = Vec::new();
+        for effort in choices {
+            let mut effort_label = Self::reasoning_effort_label(&effort).to_string();
+            if effort == default_effort {
+                effort_label.push_str(" (default)");
+            }
+
+            let description = preset
+                .supported_reasoning_efforts
+                .iter()
+                .find(|option| option.effort == effort)
+                .map(|option| option.description.to_string())
+                .filter(|description| !description.is_empty());
+
+            let submit_target = submit_target.clone();
+            let model = model.clone();
+            let effort_for_action = effort.clone();
+            let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
+                tx.send(plan_implementation_submit_event(
+                    &submit_target,
+                    model.as_str(),
+                    effort_for_action.clone(),
+                ));
+            })];
+
+            items.push(SelectionItem {
+                name: effort_label,
+                description,
+                is_current: Some(effort) == current_effort,
+                actions,
+                dismiss_on_select: true,
+                ..Default::default()
+            });
+        }
+
+        let subtitle = format!("Model: {model}. Pick thinking effort for implementation.");
+        self.bottom_pane.show_selection_view(SelectionViewParams {
+            header: self.model_menu_header("Choose implementation effort", &subtitle),
+            footer_hint: Some(standard_popup_hint_line()),
+            items,
+            initial_selected_idx,
+            ..Default::default()
+        });
+    }
+
     fn model_menu_header(&self, title: &str, subtitle: &str) -> Box<dyn Renderable> {
         let title = title.to_string();
         let subtitle = subtitle.to_string();

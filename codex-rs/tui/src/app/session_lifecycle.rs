@@ -532,14 +532,19 @@ impl App {
         app_server: &mut AppServerSession,
         session_start_source: Option<ThreadStartSource>,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
+        model_override: Option<String>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
     ) {
         // Start a fresh in-memory session while preserving resumability via persisted rollout
         // history. If an initial message is provided, `enqueue_primary_thread_session` suppresses it
         // until the new session is configured and any replayed turns have been rendered.
         self.refresh_in_memory_config_from_disk_best_effort("starting a new thread")
             .await;
-        let model = self.chat_widget.current_model().to_string();
-        let config = self.fresh_session_config();
+        let previous_model = self.chat_widget.current_model().to_string();
+        let config = self.fresh_session_config_with_overrides(
+            model_override.as_deref(),
+            reasoning_effort_override,
+        );
         let summary = session_summary(
             self.chat_widget.token_usage(),
             self.chat_widget.thread_id(),
@@ -588,7 +593,7 @@ impl App {
                 self.chat_widget.add_error_message(format!(
                     "Failed to start a fresh session through the app server: {err}"
                 ));
-                self.config.model = Some(model);
+                self.config.model = Some(previous_model);
             }
         }
         tui.frame_requester().schedule_frame();
@@ -728,6 +733,22 @@ impl App {
         config.service_tier = self.chat_widget.configured_service_tier();
         config
     }
+
+    pub(super) fn fresh_session_config_with_overrides(
+        &self,
+        model_override: Option<&str>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
+    ) -> Config {
+        let mut config = self.fresh_session_config();
+        if let Some(model_override) = model_override {
+            config.model = Some(model_override.to_string());
+        }
+        if let Some(reasoning_effort_override) = reasoning_effort_override {
+            config.model_reasoning_effort = Some(reasoning_effort_override);
+        }
+        config
+    }
+
     pub(super) async fn resume_target_session(
         &mut self,
         tui: &mut tui::Tui,

@@ -1,6 +1,7 @@
 use codex_protocol::config_types::CollaborationModeMask;
 
 use crate::app_event::AppEvent;
+use crate::app_event::PlanImplementationSubmitTarget;
 use crate::bottom_pane::SelectionAction;
 use crate::bottom_pane::SelectionItem;
 use crate::bottom_pane::SelectionViewParams;
@@ -9,6 +10,9 @@ use crate::bottom_pane::popup_consts::standard_popup_hint_line;
 pub(super) const PLAN_IMPLEMENTATION_TITLE: &str = "Implement this plan?";
 const PLAN_IMPLEMENTATION_YES: &str = "Yes, implement this plan";
 const PLAN_IMPLEMENTATION_CLEAR_CONTEXT: &str = "Yes, clear context and implement";
+const PLAN_IMPLEMENTATION_PICK_MODEL: &str = "Choose model and implement";
+const PLAN_IMPLEMENTATION_PICK_MODEL_CLEAR_CONTEXT: &str =
+    "Choose model, clear context, and implement";
 const PLAN_IMPLEMENTATION_NO: &str = "No, stay in Plan mode";
 pub(super) const PLAN_IMPLEMENTATION_CODING_MESSAGE: &str = "Implement the plan.";
 pub(super) const PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX: &str = concat!(
@@ -19,6 +23,16 @@ pub(super) const PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX: &str = concat!(
 );
 pub(super) const PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE: &str = "Default mode unavailable";
 pub(super) const PLAN_IMPLEMENTATION_NO_APPROVED_PLAN: &str = "No approved plan available";
+
+pub(super) fn clear_context_implementation_prompt(plan_markdown: &str) -> Option<String> {
+    let plan_markdown = plan_markdown.trim();
+    if plan_markdown.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX}\n\n{plan_markdown}"
+    ))
+}
 
 /// Builds the confirmation prompt shown after a plan is approved in Plan mode.
 ///
@@ -54,11 +68,13 @@ pub(super) fn selection_view_params(
             Some(PLAN_IMPLEMENTATION_DEFAULT_UNAVAILABLE.to_string()),
         ),
         (Some(_), Some(plan_markdown)) if !plan_markdown.trim().is_empty() => {
-            let user_text =
-                format!("{PLAN_IMPLEMENTATION_CLEAR_CONTEXT_PREFIX}\n\n{plan_markdown}");
+            let user_text = clear_context_implementation_prompt(plan_markdown)
+                .expect("plan markdown was checked to be non-empty");
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 tx.send(AppEvent::ClearUiAndSubmitUserMessage {
                     text: user_text.clone(),
+                    model_override: None,
+                    reasoning_effort_override: None,
                 });
             })];
             (actions, None)
@@ -73,6 +89,8 @@ pub(super) fn selection_view_params(
         || "Fresh thread with this plan.".to_string(),
         |label| format!("Fresh thread. Context: {label}."),
     );
+    let can_implement = implement_disabled_reason.is_none();
+    let can_clear_context = clear_context_disabled_reason.is_none();
 
     SelectionViewParams {
         title: Some(PLAN_IMPLEMENTATION_TITLE.to_string()),
@@ -85,7 +103,26 @@ pub(super) fn selection_view_params(
                 selected_description: None,
                 is_current: false,
                 actions: implement_actions,
-                disabled_reason: implement_disabled_reason,
+                disabled_reason: implement_disabled_reason.clone(),
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: PLAN_IMPLEMENTATION_PICK_MODEL.to_string(),
+                description: Some("Pick a model before switching to Default mode.".to_string()),
+                selected_description: None,
+                is_current: false,
+                actions: if can_implement {
+                    let action: SelectionAction = Box::new(move |tx| {
+                        tx.send(AppEvent::OpenPlanImplementationModelPicker {
+                            target: PlanImplementationSubmitTarget::CurrentThread,
+                        });
+                    });
+                    vec![action]
+                } else {
+                    Vec::new()
+                },
+                disabled_reason: implement_disabled_reason.clone(),
                 dismiss_on_select: true,
                 ..Default::default()
             },
@@ -95,7 +132,26 @@ pub(super) fn selection_view_params(
                 selected_description: None,
                 is_current: false,
                 actions: clear_context_actions,
-                disabled_reason: clear_context_disabled_reason,
+                disabled_reason: clear_context_disabled_reason.clone(),
+                dismiss_on_select: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: PLAN_IMPLEMENTATION_PICK_MODEL_CLEAR_CONTEXT.to_string(),
+                description: Some("Pick a model, then implement in a fresh thread.".to_string()),
+                selected_description: None,
+                is_current: false,
+                actions: if can_clear_context {
+                    let action: SelectionAction = Box::new(move |tx| {
+                        tx.send(AppEvent::OpenPlanImplementationModelPicker {
+                            target: PlanImplementationSubmitTarget::FreshThread,
+                        });
+                    });
+                    vec![action]
+                } else {
+                    Vec::new()
+                },
+                disabled_reason: clear_context_disabled_reason.clone(),
                 dismiss_on_select: true,
                 ..Default::default()
             },
