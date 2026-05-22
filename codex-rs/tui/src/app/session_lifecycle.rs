@@ -953,6 +953,8 @@ impl App {
         session_start_source: Option<ThreadStartSource>,
         initial_user_message: Option<crate::chatwidget::UserMessage>,
         new_thread_name: Option<String>,
+        model_override: Option<String>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
     ) {
         if self.reject_pending_permission_root_switch() {
             if let Some(message) = initial_user_message {
@@ -980,6 +982,11 @@ impl App {
             app_server.managed_new_thread_defaults(),
             &self.cli_kv_overrides,
             &self.harness_overrides,
+        );
+        Self::apply_fresh_session_overrides(
+            &mut config,
+            model_override.as_deref(),
+            reasoning_effort_override,
         );
         let summary = session_summary(
             self.chat_widget.token_usage(),
@@ -1249,6 +1256,40 @@ impl App {
         }
         self.agent_navigation
             .adjacent_thread_id(self.current_displayed_thread_id(), direction)
+    }
+
+    pub(super) fn fresh_session_config(&self) -> Config {
+        let mut config = self.config.clone();
+        config.service_tier = self.chat_widget.configured_service_tier();
+        config
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn fresh_session_config_with_overrides(
+        &self,
+        model_override: Option<&str>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
+    ) -> Config {
+        let mut config = self.fresh_session_config();
+        Self::apply_fresh_session_overrides(
+            &mut config,
+            model_override,
+            reasoning_effort_override,
+        );
+        config
+    }
+
+    fn apply_fresh_session_overrides(
+        config: &mut Config,
+        model_override: Option<&str>,
+        reasoning_effort_override: Option<ReasoningEffortConfig>,
+    ) {
+        if let Some(model_override) = model_override {
+            config.model = Some(model_override.to_string());
+        }
+        if let Some(reasoning_effort_override) = reasoning_effort_override {
+            config.model_reasoning_effort = Some(reasoning_effort_override);
+        }
     }
 
     pub(super) async fn resume_target_session(
