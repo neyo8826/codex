@@ -5667,6 +5667,53 @@ async fn fresh_session_config_uses_current_service_tier() {
 }
 
 #[tokio::test]
+async fn fresh_session_config_with_overrides_applies_model_override() {
+    let app = make_test_app().await;
+
+    let config = app.fresh_session_config_with_overrides(
+        Some("gpt-5.4-mini"),
+        /*reasoning_effort_override*/ None,
+    );
+
+    assert_eq!(config.model.as_deref(), Some("gpt-5.4-mini"));
+}
+
+#[tokio::test]
+async fn fresh_session_config_with_overrides_applies_reasoning_effort_override() {
+    let app = make_test_app().await;
+
+    let config = app.fresh_session_config_with_overrides(
+        /*model_override*/ None,
+        Some(ReasoningEffortConfig::High),
+    );
+
+    assert_eq!(
+        config.model_reasoning_effort,
+        Some(ReasoningEffortConfig::High)
+    );
+}
+
+#[tokio::test]
+async fn replacement_chatwidget_model_prefers_config_model_when_present() {
+    let app = make_test_app().await;
+    let mut config = app.config.clone();
+    config.model = Some("gpt-5.4-mini".to_string());
+
+    let model = App::replacement_chatwidget_model(&config, "gpt-5");
+    assert_eq!(model.as_deref(), Some("gpt-5.4-mini"));
+}
+
+#[tokio::test]
+async fn replacement_chatwidget_model_falls_back_to_current_model_when_config_missing() {
+    let app = make_test_app().await;
+    let mut config = app.config.clone();
+    config.model = None;
+
+    let model = App::replacement_chatwidget_model(&config, "gpt-5");
+    assert_eq!(model.as_deref(), Some("gpt-5"));
+}
+
+#[tokio::test]
 async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
 
