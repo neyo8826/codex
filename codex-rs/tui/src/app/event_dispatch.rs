@@ -27,6 +27,8 @@ impl App {
                 self.start_fresh_session_with_summary_hint(
                     tui, app_server, /*session_start_source*/ None,
                     /*initial_user_message*/ None, name,
+                    /*model_override*/ None,
+                    /*reasoning_effort_override*/ None,
                 )
                 .await;
             }
@@ -85,13 +87,19 @@ impl App {
                     Some(ThreadStartSource::Clear),
                     /*initial_user_message*/ None,
                     name,
+                    /*model_override*/ None,
+                    /*reasoning_effort_override*/ None,
                 )
                 .await;
             }
             AppEvent::RawOutputModeChanged { enabled } => {
                 self.apply_raw_output_mode(tui, enabled, /*notify*/ false);
             }
-            AppEvent::ClearUiAndSubmitUserMessage { text } => {
+            AppEvent::ClearUiAndSubmitUserMessage {
+                text,
+                model_override,
+                reasoning_effort_override,
+            } => {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
@@ -105,6 +113,8 @@ impl App {
                         Vec::new(),
                     ),
                     /*new_thread_name*/ None,
+                    model_override,
+                    reasoning_effort_override,
                 )
                 .await;
             }
@@ -1387,6 +1397,14 @@ impl App {
             AppEvent::OpenPlanReasoningScopePrompt { model, effort } => {
                 self.chat_widget
                     .open_plan_reasoning_scope_prompt(model, effort);
+            }
+            AppEvent::OpenPlanImplementationModelPicker { target } => {
+                self.chat_widget
+                    .open_plan_implementation_model_picker(target);
+            }
+            AppEvent::OpenPlanImplementationReasoningPicker { target, model } => {
+                self.chat_widget
+                    .open_plan_implementation_reasoning_picker(target, model);
             }
             AppEvent::OpenAllModelsPopup { models } => {
                 self.chat_widget.open_all_models_popup(models);
