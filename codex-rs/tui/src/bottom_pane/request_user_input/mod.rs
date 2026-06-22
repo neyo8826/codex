@@ -279,25 +279,7 @@ impl RequestUserInputOverlay {
     }
 
     fn auto_resolution_timing_at(&self, now: Instant) -> AutoResolutionTiming {
-        // The TUI currently treats autoResolutionMs as an enable signal. The
-        // model-provided duration value is reserved for future runtime policy.
-        if self.request.auto_resolution_ms.is_none() || self.auto_resolution_snoozed {
-            return AutoResolutionTiming::Disabled;
-        }
-
-        let elapsed = now.saturating_duration_since(self.request_started_at);
-        if elapsed < AUTO_RESOLUTION_HIDDEN_GRACE {
-            return AutoResolutionTiming::HiddenGrace {
-                remaining: AUTO_RESOLUTION_HIDDEN_GRACE.saturating_sub(elapsed),
-            };
-        }
-        let visible_elapsed = elapsed.saturating_sub(AUTO_RESOLUTION_HIDDEN_GRACE);
-        if visible_elapsed < AUTO_RESOLUTION_VISIBLE_COUNTDOWN {
-            return AutoResolutionTiming::VisibleCountdown {
-                remaining: AUTO_RESOLUTION_VISIBLE_COUNTDOWN.saturating_sub(visible_elapsed),
-            };
-        }
-        AutoResolutionTiming::Due
+        AutoResolutionTiming::Disabled
     }
 
     fn auto_resolution_next_frame_delay_at(&self, now: Instant) -> Option<Duration> {
