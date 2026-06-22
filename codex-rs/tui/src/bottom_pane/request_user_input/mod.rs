@@ -66,7 +66,9 @@ const UNANSWERED_CONFIRM_GO_BACK_DESC: &str = "Return to the first unanswered qu
 const UNANSWERED_CONFIRM_SUBMIT: &str = "Proceed";
 const UNANSWERED_CONFIRM_SUBMIT_DESC_SINGULAR: &str = "question";
 const UNANSWERED_CONFIRM_SUBMIT_DESC_PLURAL: &str = "questions";
+#[expect(unused)]
 const AUTO_RESOLUTION_HIDDEN_GRACE: Duration = Duration::from_secs(/*secs*/ 60);
+#[expect(unused)]
 const AUTO_RESOLUTION_VISIBLE_COUNTDOWN: Duration = Duration::from_secs(/*secs*/ 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,8 +80,11 @@ enum Focus {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AutoResolutionTiming {
     Disabled,
+    #[expect(unused)]
     HiddenGrace { remaining: Duration },
+    #[expect(unused)]
     VisibleCountdown { remaining: Duration },
+    #[expect(unused)]
     Due,
 }
 
@@ -285,26 +290,8 @@ impl RequestUserInputOverlay {
         }
     }
 
-    fn auto_resolution_timing_at(&self, now: Instant) -> AutoResolutionTiming {
-        // autoResolutionMs is deprecated; isBlocking now controls whether the
-        // request can auto-resolve using the TUI's fixed grace/countdown policy.
-        if self.request.is_blocking || self.auto_resolution_snoozed {
-            return AutoResolutionTiming::Disabled;
-        }
-
-        let elapsed = now.saturating_duration_since(self.request_started_at);
-        if elapsed < AUTO_RESOLUTION_HIDDEN_GRACE {
-            return AutoResolutionTiming::HiddenGrace {
-                remaining: AUTO_RESOLUTION_HIDDEN_GRACE.saturating_sub(elapsed),
-            };
-        }
-        let visible_elapsed = elapsed.saturating_sub(AUTO_RESOLUTION_HIDDEN_GRACE);
-        if visible_elapsed < AUTO_RESOLUTION_VISIBLE_COUNTDOWN {
-            return AutoResolutionTiming::VisibleCountdown {
-                remaining: AUTO_RESOLUTION_VISIBLE_COUNTDOWN.saturating_sub(visible_elapsed),
-            };
-        }
-        AutoResolutionTiming::Due
+    fn auto_resolution_timing_at(&self, _now: Instant) -> AutoResolutionTiming {
+        AutoResolutionTiming::Disabled
     }
 
     fn auto_resolution_next_frame_delay_at(&self, now: Instant) -> Option<Duration> {
